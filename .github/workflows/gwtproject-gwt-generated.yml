@@ -1,0 +1,161 @@
+name: gwtproject/gwt
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java-version:
+        - 11
+        - 17
+        - 21
+        - 22
+    steps:
+    - name: Checkout GWT itself into one directory
+      uses: actions/checkout@v4
+      with:
+        path: gwt
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Checkout GWT tools into a sibling directory
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: tools
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up JDK ${{ matrix.java-version }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: temurin
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build, style/api checks, test, produce docs (ces) (ces)
+      run: |
+        set -eux
+
+        cd gwt
+
+        java -version
+
+        ant -version
+
+        # Set env vars to ensure we get the build/test we expect
+
+        export \
+          TZ=America/Los_Angeles \
+          ANT_OPTS='-Dfile.encoding=UTF8 -Xmx2g' \
+          GWT_VERSION=HEAD-SNAPSHOT
+        # Run the ant tasks, disabling watchFileChanges to work around a github actions limitation
+
+        ant clean test dist doc \
+          -Dtest.jvmargs='-ea -Dgwt.watchFileChanges=false' \
+          -Dtest.web.htmlunit.disable=true \
+          -Dtest.nometa.htmlunit.disable=true \
+          -Dtest.emma.htmlunit.disable=true
+    - name: Report test results (ces)
+      uses: mikepenz/action-junit-report@v4.3.1
+      if: always()
+      with:
+        report_paths: gwt/build/out/**/test/**/reports/TEST-*.xml
+    - name: Upload checkstyle xml for manual review in its own artifact
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: checkstyle-reports-java${{ matrix.java-version }}
+        path: gwt/build/out/**/checkstyle*.xml
+    - name: Upload test xml files for manual review in its own artifact (ces)
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: junit-reports-java${{ matrix.java-version }}
+        path: gwt/build/out/**/test/**/reports/TEST-*.xml
+    - name: On success, upload the release zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: gwt-java${{ matrix.java-version }}
+        path: gwt/build/dist/gwt-*.zip
+    - name: Set up sonatype credentials
+      uses: actions/setup-java@v4
+      if: ${{ github.event_name == 'schedule' && github.repository_owner == 'gwtproject' && matrix.java-version == '21' }}
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: temurin
+        server-id: sonatype-snapshots
+        server-username: SONATYPE_USERNAME
+        server-password: SONATYPE_PASSWORD
+    - name: Nightly builds should be deployed as snapshots to sonatype
+      if: ${{ github.event_name == 'schedule' && github.repository_owner == 'gwtproject' && matrix.java-version == '21' }}
+      env:
+        SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+        SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+      run: |
+        set -eux
+
+        # Set the version to deploy (it was also set in the build step above)
+
+        export GWT_VERSION=HEAD-SNAPSHOT
+
+        export GWT_MAVEN_REPO_URL=https://oss.sonatype.org/content/repositories/snapshots/
+
+        export GWT_MAVEN_REPO_ID=sonatype-snapshots
+
+        cd gwt
+
+        # With no user input, run the push-gwtproject.sh script to deploy org.gwtproject artifacts
+
+        maven/push-gwtproject.sh < /dev/null
