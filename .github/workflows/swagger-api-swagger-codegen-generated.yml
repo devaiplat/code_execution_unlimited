@@ -1,0 +1,193 @@
+name: swagger-api/swagger-codegen
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build-codegen:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java:
+        - 8
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-java@v1
+      with:
+        java-version: ${{ matrix.java }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: build codegen
+      run: |
+        mkdir codegen-cli
+
+        echo "BUILDING Codegen"
+
+        mvn -version
+
+        mvn -q -B package -DskipTests -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120 -Dmaven.wagon.http.retryHandler.count=3
+
+        cp modules/swagger-codegen-cli/target/swagger-codegen-cli.jar codegen-cli
+    - name: upload codegen cli
+      uses: actions/upload-artifact@v2
+      with:
+        name: codegen-cli
+        path: codegen-cli
+  generate:
+    needs: build-codegen
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java:
+        - 8
+    outputs:
+      generate_outcome: ${{ steps.outcome.outputs.generate_outcome }}
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-java@v1
+      with:
+        java-version: ${{ matrix.java }}
+    - name: Download codegen cli
+      uses: actions/download-artifact@v2
+      with:
+        name: codegen-cli
+    - name: generate
+      id: generate
+      continue-on-error: true
+      uses: ./.github/actions/generate
+      with:
+        language: aspnetcore
+        job-name: ${{ env.JOB_NAME }}
+        spec-url: https://raw.githubusercontent.com/swagger-api/swagger-codegen/master/modules/swagger-codegen/src/test/resources/2_0/petstore.yaml
+        options: ' --additional-properties packageGuid={3C799344-F285-4669-8FD5-7ED9B795D5C5}  --additional-properties interface-only=true'
+    - id: outcome
+      run: |
+        echo "generate_outcome=${{ steps.generate.outcome }}" >> $GITHUB_OUTPUT
+
+        echo ${{ steps.generate.outcome }} > generate_outcome_${{ env.JOB_NAME }}
+    - name: upload generate outcome
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.JOB_NAME }}generate_outcome
+        path: generate_outcome_${{ env.JOB_NAME }}
+    - name: upload generate logs
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.JOB_NAME }}generate_logs
+        path: ${{ steps.generate.outputs.logs }}
+    - name: upload generated code
+      if: contains(steps.generate.outcome, 'success')
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.JOB_NAME }}generated
+        path: ${{ steps.generate.outputs.path }}
+    env:
+      JOB_NAME: aspnetcore-interface-only-v2-sample
+  build:
+    needs: generate
+    if: true
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dotnet-version:
+        - 3.1.x
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Download artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.JOB_NAME }}generated
+        path: generated/${{ env.JOB_NAME }}
+    - name: Download logs
+      uses: actions/download-artifact@v2
+      with:
+        name: ${{ env.JOB_NAME }}generate_logs
+    - name: Set up DotNet 3.1.x
+      uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: ${{ matrix.dotnet-version }}
+    - name: build
+      id: build
+      uses: ./.github/actions/build
+      continue-on-error: true
+      with:
+        path: generated/${{ env.JOB_NAME }}
+        job-name: ${{ env.JOB_NAME }}
+        build-commands: sh ./build.sh
+    - id: outcome
+      run: |
+        echo "build_outcome=${{ steps.build.outcome }}" >> $GITHUB_OUTPUT
+
+        echo ${{ steps.build.outcome }} > ${{ env.JOB_NAME }}build_outcome
+    - name: upload build outcome
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.JOB_NAME }}build_outcome
+        path: ${{ env.JOB_NAME }}build_outcome
+    - name: upload logs
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ env.JOB_NAME }}logs
+        path: ${{ steps.build.outputs.logs }}
+    env:
+      JOB_NAME: aspnetcore-interface-only-v2-sample
