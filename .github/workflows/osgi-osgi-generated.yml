@@ -1,0 +1,47 @@
+name: osgi/osgi
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: read-all
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@9bb56186c3b09b4f86b1c65136769dd318469633
+      with:
+        persist-credentials: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Run analysis
+      uses: ossf/scorecard-action@0864cf19026789058feabb7e87baa5f140aac736
+      with:
+        results_file: results.sarif
+        results_format: sarif
+        publish_results: true
+    - name: Upload artifact
+      uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808
+      with:
+        name: SARIF file
+        path: results.sarif
+        retention-days: 5
+    - name: Upload to code-scanning
+      uses: github/codeql-action/upload-sarif@4355270be187e1b672a7a1c7c7bae5afdc1ab94a
+      with:
+        sarif_file: results.sarif
