@@ -1,0 +1,48 @@
+name: square/okhttp
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+env:
+  GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false -Dkotlin.incremental=false
+jobs:
+  test_docs:
+    permissions:
+      checks: write
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - uses: actions/setup-python@v5
+      with:
+        python-version: 3.x
+    - run: pip install mkdocs-material mkdocs-redirects
+    - name: Generate Docs
+      run: ./test_docs.sh
+    - uses: actions/upload-artifact@v4
+      with:
+        name: docs
+        path: site/
