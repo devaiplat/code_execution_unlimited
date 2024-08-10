@@ -1,0 +1,92 @@
+name: akka/akka
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  check-code-style:
+    name: Check / Code Style
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Cache Coursier cache
+      uses: coursier/cache-action@1ff273bff02a8787bc9f1877d347948af647956d
+    - name: Set up JDK 11
+      uses: coursier/setup-action@7bde40eee928896f074dbb76d22dd772eed5c65f
+      with:
+        jvm: temurin:1.11
+    - name: Code style check
+      run: |
+        cp .jvmopts-ci .jvmopts
+
+        sbt \
+
+        -Dsbt.override.build.repos=false \
+
+        -Dsbt.log.noformat=false \
+
+        verifyCodeStyle
+  pull-request-validation:
+    name: Check / Tests
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Cache Coursier cache
+      uses: coursier/cache-action@1ff273bff02a8787bc9f1877d347948af647956d
+    - name: Set up JDK 11
+      uses: coursier/setup-action@7bde40eee928896f074dbb76d22dd772eed5c65f
+      with:
+        jvm: temurin:1.11
+    - name: sbt validatePullRequest
+      run: |
+        cp .jvmopts-ci .jvmopts
+
+        sbt \
+
+        -Dakka.mima.enabled=false \
+
+        -Dakka.test.multi-in-test=false \
+
+        -Dakka.test.timefactor=2 \
+
+        -Dakka.actor.testkit.typed.timefactor=2 \
+
+        -Dakka.test.tags.exclude=gh-exclude,timing \
+
+        -Dakka.cluster.assert=on \
+
+        -Dsbt.override.build.repos=false \
+
+        -Dakka.test.multi-node=false \
+
+        -Dsbt.log.noformat=false \
+
+        -Dakka.log.timestamps=true \
+
+        validateCompile validatePullRequest
