@@ -1,0 +1,47 @@
+name: GoogleCloudPlatform/appengine-java-standard
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        java:
+        - 17
+        - 21
+        - 22
+        jdk:
+        - temurin
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up JDK
+      uses: actions/setup-java@v3
+      with:
+        distribution: ${{ matrix.jdk }}
+        java-version: ${{ matrix.java }}
+        cache: maven
+    - name: Build with Maven
+      run: |
+        ./mvnw clean install -B -q
+
+        echo "done"
