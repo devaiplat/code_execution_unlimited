@@ -1,0 +1,107 @@
+name: reactor/reactor-core
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: read-all
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch:
+        - 3.5.x
+        - 3.6.x
+        - main
+        test-type:
+        - type: core
+          arguments: :reactor-core:test --no-daemon -DuseSnapshotMicrometerVersion=true
+        - type: other
+          arguments: check -x :reactor-core:test -x spotlessCheck -x :reactor-core:jcstress -DuseSnapshotMicrometerVersion=true --no-daemon
+    name: Test on ${{ matrix.branch }} - ${{ matrix.test-type.type }} tests
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Download Java 9
+      if: contains('main 3.6.x', matrix.branch)
+      run: ${GITHUB_WORKSPACE}/.github/setup.sh
+      shell: bash
+    - name: Setup Java 9
+      if: contains('main 3.6.x', matrix.branch)
+      uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
+      with:
+        distribution: jdkfile
+        java-version: 9.0.4
+        jdkFile: /opt/openjdk/java9/OpenJDK9U-jdk_x64_linux_hotspot_9.0.4_11.tar.gz
+    - name: Setup Java 21
+      if: contains('main 3.6.x', matrix.branch)
+      uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
+      with:
+        distribution: temurin
+        java-version: 21
+    - name: Setup Java 8
+      uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
+      with:
+        distribution: temurin
+        java-version: 8
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Gradle Tests (ces) (ces)
+      uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70
+      with:
+        arguments: ${{ matrix.test-type.arguments }}
