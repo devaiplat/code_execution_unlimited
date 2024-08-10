@@ -1,0 +1,47 @@
+name: HtmlUnit/htmlunit
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: read-all
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        persist-credentials: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Run analysis
+      uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46
+      with:
+        results_file: results.sarif
+        results_format: sarif
+        publish_results: true
+    - name: Upload artifact
+      uses: actions/upload-artifact@89ef406dd8d7e03cfd12d9e0a4a378f454709029
+      with:
+        name: SARIF file
+        path: results.sarif
+        retention-days: 5
+    - name: Upload to code-scanning
+      uses: github/codeql-action/upload-sarif@1b1aada464948af03b950897e5eb522f92603cc2
+      with:
+        sarif_file: results.sarif
