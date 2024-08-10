@@ -14,71 +14,21 @@ on:
       ref:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
-permissions:
-  pull-requests: write
-  contents: write
 jobs:
-  rebase:
-    name: Rebase
+  spellcheck:
+    name: 'Docs: Spellcheck'
     runs-on: ubuntu-latest
-    if: true
     steps:
-    - name: Apply patch
-      shell: bash
-      run: |
-
-                if [ -n "${{ github.event.inputs.patch }}" ]; then
-                   echo "Patch input provided. Applying patch..."
-                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
-                   echo "Decoded patch content:"
-                   cat patch.diff 
-                   echo "Apply the patch:"
-                   git apply --verbose patch.diff
-                 else
-                   echo "No patch input provided. Skipping patch application."
-                 fi
-                echo "Print git diff on local repo"
-                git diff
-    - name: Run custom command
-      shell: bash
-      run: |
-         
-                if [ -n "${{ github.event.inputs.command }}" ]; then
-                   echo "Start running custom command"
-                   echo "${{ github.event.inputs.command }}"
-                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
-                   echo "Decoded custom command is:"
-                   echo $output
-                   echo "!!==================================!!"
-                   echo "Custom command output:"
-                   echo "!!==================================!!"
-                   eval $output
-                   echo "!!==================================!!"
-                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
-                   echo "Finished running custom command!"
-                   echo "!!== RUN COMPLETED ==!!"
-                fi
-    - name: Exit if custom command was run
-      if: env.RAN_CUSTOM_COMMAND == 'true'
-      shell: bash
-      run: |
-
-                echo "Exiting job after custom command run"
-                exit 1
-    - name: Checkout the latest code (ces) (ces)
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v2
+      name: Check out the code
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - name: Automatic Rebase
-      uses: cirrus-actions/rebase@1.7
+    - uses: actions/setup-node@v4
+      name: Setup node
       with:
-        autosquash: >-
-          ${{ 
-            startsWith(github.event.comment.body, '/autosquash') ||
-            startsWith(github.event.comment.body, '/rebase-autosquash')
-          }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        node-version: 18
+    - run: npm install -g cspell
+      name: Install cSpell
+    - run: cspell --config ./cSpell.json "docs/**/*.md" --no-progress
+      name: Run cSpell
