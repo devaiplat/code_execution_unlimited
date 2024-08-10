@@ -1,0 +1,50 @@
+name: jetty/jetty.project
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+jobs:
+  stale:
+    permissions:
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/stale@v4
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        days-before-stale: 365
+        stale-issue-label: Stale
+        stale-pr-label: Stale
+        stale-issue-message: >
+          This issue has been automatically marked as stale because it has been a
+
+          full year without activity. It will be closed if no further activity occurs.
+
+          Thank you for your contributions.
+        stale-pr-message: >
+          This pull request has been automatically marked as stale because it has been a
+
+          full year without activity. It will be closed if no further activity occurs.
+
+          Thank you for your contributions.
+        exempt-issue-labels: Pinned,Security,Specification,TCK
+        exempt-pr-labels: Pinned,Security,Specification,TCK
+        exempt-all-milestones: false
+        days-before-close: 30
+        delete-branch: true
+        close-issue-message: This issue has been closed due to it having no activity.
+        close-pr-message: This pull request has been closed due to it having no activity.
