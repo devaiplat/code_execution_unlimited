@@ -1,0 +1,81 @@
+name: dotnet/winforms
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+jobs:
+  backport:
+    if: true
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Extract backport target branch
+      uses: actions/github-script@v3
+      id: target-branch-extractor
+      with:
+        result-encoding: string
+        script: >
+          if (context.eventName !== "issue_comment") throw "Error: This action only works on issue_comment events.";
+
+
+          // extract the target branch name from the trigger phrase containing these characters: a-z, A-Z, digits, forward slash, dot, hyphen, underscore
+
+          const regex = /^\/backport to ([a-zA-Z\d\/\.\-\_]+)/;
+
+          target_branch = regex.exec(context.payload.comment.body);
+
+          if (target_branch == null) throw "Error: No backport branch found in the trigger phrase.";
+
+
+          return target_branch[1];
+    - name: Post backport started comment to pull request
+      uses: actions/github-script@v3
+      with:
+        script: >
+          const backport_start_body = `Started backporting to ${{ steps.target-branch-extractor.outputs.result }}: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+          await github.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: backport_start_body
+          });
+    - name: Checkout repo
+      uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Run backport
+      uses: ./eng/actions/backport
+      with:
+        target_branch: ${{ steps.target-branch-extractor.outputs.result }}
+        auth_token: ${{ secrets.GITHUB_TOKEN }}
+        pr_description_template: >-
+          Backport of #%source_pr_number% to %target_branch%
+
+
+          /cc %cc_users%
+
+
+          ## Customer Impact
+
+
+          ## Testing
+
+
+          ## Risk
