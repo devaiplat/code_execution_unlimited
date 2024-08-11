@@ -1,0 +1,38 @@
+name: redhat-developer/vscode-java
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: wow-actions/potential-duplicates@4d4ea0352e0383859279938e255179dd1dbb67b5
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        filter: ''
+        exclude: regression
+        label: potential-duplicate
+        state: all
+        threshold: 0.6
+        reactions: confused
+        comment: >-
+          We have found issues that are potential duplicates: {{#issues}}
+            - #{{ number }} ({{ accuracy }}%)
+          {{/issues}}
+
+
+          If any of the issues listed above are a duplicate, please consider closing this issue & upvoting/commenting the original one.
+
+          Alternatively, if neither of the listed issues addresses your feature/bug, keep this issue open.
