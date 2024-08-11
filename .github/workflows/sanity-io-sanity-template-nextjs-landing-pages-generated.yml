@@ -1,0 +1,39 @@
+name: sanity-io/sanity-template-nextjs-landing-pages
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  run:
+    name: "\U0001F914"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@2fddd8803e2f5c9604345a0b591c3020ee971a93
+      with:
+        node-version: lts/*
+    - run: npm install --ignore-scripts --only-dev
+    - name: check if workflows needs prettier
+      run: npx prettier --cache --check ".github/workflows/**/*.yml" || (echo "An action can't make changes to actions, you'll have to run prettier manually" && exit 1)
+    - run: npx prettier --ignore-path .gitignore --cache --write .
+    - uses: EndBug/add-and-commit@d4d066316a2a85974a05efb42be78f897793c6d9
+      with:
+        commit: --no-verify
+        message: "chore(prettier): \U0001F916 ✨"
