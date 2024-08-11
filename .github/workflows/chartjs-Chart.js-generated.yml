@@ -1,0 +1,37 @@
+name: chartjs/Chart.js
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+jobs:
+  correct_repository:
+    permissions:
+      contents: none
+    runs-on: ubuntu-latest
+    steps:
+    - name: fail on fork
+      if: github.repository_owner != 'chartjs'
+      run: exit 1
+  update_release_draft:
+    permissions:
+      contents: write
+      pull-requests: write
+    needs: correct_repository
+    runs-on: ubuntu-latest
+    steps:
+    - uses: release-drafter/release-drafter@v6
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
