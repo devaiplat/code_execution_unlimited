@@ -1,0 +1,82 @@
+name: apache/arrow
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  ARCHERY_DEBUG: 1
+  DOCKER_VOLUME_PREFIX: .docker/
+jobs:
+  docker:
+    name: AMD64 Conda Integration Test
+    runs-on: ubuntu-latest
+    if: true
+    timeout-minutes: 60
+    steps:
+    - name: Checkout Arrow
+      uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac
+      with:
+        fetch-depth: 0
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Checkout Arrow Rust
+      uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: rust
+        ref: ${{ github.event.inputs.ref }}
+    - name: Checkout Arrow nanoarrow
+      uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: nanoarrow
+        ref: ${{ github.event.inputs.ref }}
+    - name: Free up disk space
+      run: |
+        ci/scripts/util_free_space.sh
+    - name: Cache Docker Volumes
+      uses: actions/cache@13aacd865c20de90d75de3b17ebe84f7a17d57d2
+      with:
+        path: .docker
+        key: conda-${{ hashFiles('cpp/**') }}
+        restore-keys: conda-
+    - name: Setup Python
+      uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f
+      with:
+        python-version: 3.8
+    - name: Setup Archery
+      run: pip install -e dev/archery[docker]
+    - name: Execute Docker Build
+      env:
+        ARCHERY_DOCKER_USER: ${{ secrets.DOCKERHUB_USER }}
+        ARCHERY_DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+      run: |
+        archery docker run \
+          -e ARCHERY_DEFAULT_BRANCH=${{ github.event.repository.default_branch }} \
+          -e ARCHERY_INTEGRATION_WITH_NANOARROW=1 \
+          -e ARCHERY_INTEGRATION_WITH_RUST=1 \
+          conda-integration
+    - name: Docker Push
+      if: success() && github.event_name == 'push' && github.repository == 'apache/arrow' && github.ref_name == 'main'
+      env:
+        ARCHERY_DOCKER_USER: ${{ secrets.DOCKERHUB_USER }}
+        ARCHERY_DOCKER_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+      continue-on-error: true
+      run: archery docker push conda-integration
