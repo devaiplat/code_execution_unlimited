@@ -1,0 +1,30 @@
+name: formium/formik
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/stale@v3
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        days-before-stale: 30
+        days-before-close: 60
+        stale-issue-label: stale
+        stale-pr-label: stale
+        stale-pr-message: This pull request is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 60 days
+        stale-issue-message: This issue is stale because it has been open 30 days with no activity. Remove stale label or comment or this will be closed in 60 days
+        any-of-labels: 'Resolution: Duplicate,Resolution: Invalid,Resolution: Support Redirect,Resolution: Unsolved,Resolution: User Land,Resolution: Wontfix,Resolution: Workaround,Status: Author Feedback,Status: Needs More Information'
