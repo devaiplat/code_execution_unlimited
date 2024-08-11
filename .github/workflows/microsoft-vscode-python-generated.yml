@@ -1,0 +1,47 @@
+name: microsoft/vscode-python
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  issues: write
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Actions
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: ./actions
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Actions
+      run: npm install --production --prefix ./actions
+    - name: Run info-needed Closer
+      uses: ./actions/needs-more-info-closer
+      with:
+        token: ${{secrets.GITHUB_TOKEN}}
+        label: info-needed
+        closeDays: 30
+        closeComment: >-
+          Because we have not heard back with the information we requested, we are closing this issue for now. If you are able to provide the info later on, then we will be happy to re-open this issue to pick up where we left off. 
+
+
+          Happy Coding!
+        pingDays: 30
+        pingComment: >-
+          Hey @${assignee}, this issue might need further attention.
+
+
+          @${author}, you can help us out by closing this issue if the problem no longer exists, or adding more information.
