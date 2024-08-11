@@ -1,0 +1,147 @@
+name: stripe-samples/subscription-use-cases
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  STRIPE_PUBLISHABLE_KEY: ${{ secrets.TEST_STRIPE_PUBLISHABLE_KEY }}
+  STRIPE_SECRET_KEY: ${{ secrets.TEST_STRIPE_SECRET_KEY }}
+  PRICE: ${{ secrets.TEST_PRICE }}
+jobs:
+  e2e_test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        implementation:
+        - client_type: vanillajs
+          server_url: http://web:4242
+          profile: e2e
+        - client_type: react
+          server_url: http://frontend:3000
+          profile: frontend
+        target:
+        - sample: fixed-price-subscriptions
+          tests: fixed_price_e2e_spec.rb
+    env:
+      SERVER_URL: ${{ matrix.implementation.server_url }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Checkout CI runner
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: sample-ci
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: |
+        sed -i -E 's/http:\/\/localhost:4242/http:\/\/web:4242/' ${{ matrix.target.sample }}/client/react/vite.config.mjs
+
+        ln -s react-cra sample-ci/docker/react
+
+
+        source sample-ci/helpers.sh
+
+        setup_dependencies
+
+
+        install_docker_compose_settings
+
+        export STRIPE_WEBHOOK_SECRET=$(retrieve_webhook_secret)
+
+        cat <<EOF >> .env
+
+        DOMAIN=${{ matrix.implementation.server_url }}
+
+        BASIC=${{ secrets.TEST_BASIC_PRICE }}
+
+        PREMIUM=${{ secrets.TEST_PREMIUM_PRICE }}
+
+        EOF
+
+
+        configure_docker_compose_for_integration "${{ matrix.target.sample }}" node ../../client/${{ matrix.implementation.client_type }} node:lts
+
+        docker-compose --profile="${{ matrix.implementation.profile }}" up -d && wait_web_server
+
+        command="docker-compose exec -T runner bundle exec rspec spec/${{ matrix.target.tests }}"
+
+        $command \
+          || $command --only-failures \
+          || $command --only-failures --format RSpec::Github::Formatter --format progress
+    - name: Collect debug information
+      if: ${{ failure() }}
+      run: |
+        cat .env
+
+        cat docker-compose.yml
+
+        docker-compose ps -a
+
+        docker-compose --profile="${{ matrix.implementation.profile }}" logs web frontend
+
+
+        docker cp $(docker-compose ps -qa runner | head -1):/work/tmp .
+    - name: Upload capybara screenshots
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: screenshots
+        path: tmp/capybara
