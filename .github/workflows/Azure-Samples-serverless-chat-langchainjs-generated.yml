@@ -1,0 +1,42 @@
+name: Azure-Samples/serverless-chat-langchainjs
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Build Bicep for linting
+      uses: azure/CLI@v2
+      with:
+        inlineScript: az config set bicep.use_binary_from_path=false && az bicep build -f infra/main.bicep --stdout
+    - name: Run Microsoft Security DevOps Analysis
+      uses: microsoft/security-devops-action@preview
+      id: msdo
+      continue-on-error: true
+      with:
+        tools: templateanalyzer
+    - name: Upload alerts to Security tab
+      if: github.repository_owner == 'Azure-Samples'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.msdo.outputs.sarifFile }}
