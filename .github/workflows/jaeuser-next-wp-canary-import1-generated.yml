@@ -1,0 +1,28 @@
+name: jaeuser/next-wp-canary-import1
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  trigger_e2e_tests:
+    name: Trigger end-to-end tests
+    runs-on: ubuntu-latest
+    steps:
+    - name: Trigger CircleCI Pipeline
+      run: |
+        curl --request POST \
+          --url https://circleci.com/api/v2/project/gh/pantheon-systems/qa-automation/pipeline \
+          --header "Circle-Token: ${{ secrets.CIRCLECI_API_KEY }}" \
+          --header "content-type: application/json" \
+          --data '{"branch":"master", "parameters":{"run-workflow-build-and-test":false, "run-workflow-e2e-test":false, "run-workflow-sdk-test":true}}'
