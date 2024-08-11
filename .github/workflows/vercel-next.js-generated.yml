@@ -1,0 +1,191 @@
+name: vercel/next.js
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  NAPI_CLI_VERSION: 2.14.7
+  TURBO_VERSION: 2.0.3
+  NODE_LTS_VERSION: 20.9.0
+  TEST_CONCURRENCY: 8
+  RUST_BACKTRACE: 0
+  TURBO_TEAM: vercel
+  TURBO_REMOTE_ONLY: true
+  NEXT_TELEMETRY_DISABLED: 1
+  NEXT_SKIP_NATIVE_POSTINSTALL: 1
+  DATADOG_API_KEY: ${{ secrets.DATA_DOG_API_KEY }}
+  NEXT_JUNIT_TEST_REPORT: true
+  DD_ENV: ci
+  TEST_TIMINGS_TOKEN: ${{ secrets.TEST_TIMINGS_TOKEN }}
+  NEXT_TEST_JOB: 1
+  VERCEL_TEST_TOKEN: ${{ secrets.VERCEL_TEST_TOKEN }}
+  VERCEL_TEST_TEAM: vtest314-next-e2e-tests
+jobs:
+  build:
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    runs-on: ${{ fromJson(inputs.runs_on_labels) }}
+    outputs:
+      input_step_key: ${{ steps.var.outputs.input_step_key }}
+    steps:
+    - name: Normalize input step names into path key
+      uses: actions/github-script@v7
+      id: var
+      with:
+        script: >
+          core.setOutput('input_step_key', '${{ inputs.stepName }}'.toLowerCase().replaceAll(/[/.]/g, '-').trim('-'));
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.nodeVersion || env.NODE_LTS_VERSION }}
+        check-latest: true
+    - run: node -v
+    - run: corepack enable
+    - run: pwd
+    - run: rm -rf .git
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 25
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Rust
+      uses: ./.github/actions/setup-rust
+      if: ${{ inputs.skipNativeBuild != 'yes' || inputs.needsNextest == 'yes' || inputs.needsRust == 'yes' }}
+    - name: Install mold linker
+      if: ${{ inputs.mold == 'yes' }}
+      run: |
+        sudo apt update
+
+        sudo apt install -y mold
+
+        echo RUSTFLAGS=${RUSTFLAGS}\ -C\ link-arg=-fuse-ld=mold >> $GITHUB_ENV
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install nextest (ces) (ces)
+      if: ${{ inputs.needsNextest == 'yes' }}
+      uses: taiki-e/install-action@nextest
+    - run: rustc --version
+      if: ${{ inputs.skipNativeBuild != 'yes' || inputs.needsNextest == 'yes' || inputs.needsRust == 'yes' }}
+    - run: corepack prepare --activate yarn@1.22.19 && npm i -g "turbo@${TURBO_VERSION}" "@napi-rs/cli@${NAPI_CLI_VERSION}"
+    - name: Cache on ${{ github.ref_name }}
+      uses: ijjk/rust-cache@turbo-cache-v1.0.8
+      if: ${{ inputs.rustCacheKey }}
+      with:
+        cache-provider: turbo
+        save-if: ${{ github.ref_name == 'canary' }}
+        shared-key: ${{ inputs.rustCacheKey }}-x86_64-unknown-linux-gnu-build-${{ hashFiles('.cargo/config.toml') }}
+    - run: git clean -xdf && rm -rf /tmp/next-repo-*; rm -rf /tmp/next-install-* /tmp/yarn-* /tmp/ncc-cache target
+    - name: Set CI git user
+      run: |
+        git config --global user.name "vercel-ci-bot"
+
+        git config --global user.email "infra+ci@vercel.com"
+    - run: cargo clean
+      if: ${{ inputs.skipNativeBuild != 'yes' || inputs.needsNextest == 'yes' || inputs.needsRust == 'yes' }}
+    - run: node scripts/normalize-version-bump.js
+      name: normalize versions
+    - run: turbo run build-native-release -vvv --env-mode loose --remote-cache-timeout 90 --summarize -- --target x86_64-unknown-linux-gnu
+      if: ${{ inputs.skipNativeBuild != 'yes' }}
+    - name: Upload next-swc artifact
+      if: ${{ inputs.uploadSwcArtifact == 'yes' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: next-swc-binary
+        path: packages/next-swc/native/next-swc.linux-x64-gnu.node
+    - run: git checkout .
+      if: ${{ inputs.skipInstallBuild != 'yes' }}
+    - run: pnpm install
+      if: ${{ inputs.skipInstallBuild != 'yes' }}
+    - name: Install node-file-trace test dependencies (ces)
+      if: ${{ inputs.needsNextest == 'yes' }}
+      working-directory: turbopack/crates/turbopack/tests/node-file-trace
+      run: pnpm install -r --side-effects-cache false
+    - run: ANALYZE=1 pnpm build
+      if: ${{ inputs.skipInstallBuild != 'yes' }}
+    - run: pnpm playwright install-deps
+      if: ${{ inputs.skipInstallBuild != 'yes' }}
+    - run: pnpm playwright install chromium
+      if: ${{ inputs.skipInstallBuild != 'yes' }}
+    - run: turbo run get-test-timings -- --build ${{ github.sha }}
+    - run: /bin/bash -c "${{ inputs.afterBuild }}"
+      timeout-minutes: ${{ inputs.timeout_minutes }}
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: turbo-run-summary-${{ steps.var.outputs.input_step_key }}
+        path: .turbo/runs
+        if-no-files-found: ignore
+    - name: Upload bundle analyzer artifacts
+      uses: actions/upload-artifact@v4
+      if: ${{ inputs.uploadAnalyzerArtifacts == 'yes' }}
+      with:
+        name: webpack bundle analysis stats-${{ steps.var.outputs.input_step_key }}
+        path: packages/next/dist/compiled/next-server/report.*.html
+    - name: Upload test report artifacts (ces)
+      uses: actions/upload-artifact@v4
+      if: ${{ inputs.afterBuild && always() }}
+      with:
+        name: test-reports-${{ steps.var.outputs.input_step_key }}
+        path: >
+          test/test-junit-report
+
+          test/turbopack-test-junit-report
+        if-no-files-found: ignore
+    - name: Upload test report artifacts (ces)
+      uses: actions/upload-artifact@v4
+      if: ${{ inputs.afterBuild && always() }}
+      with:
+        name: test-playwright-snapshots-${{ steps.var.outputs.input_step_key }}
+        path: >
+          test/traces
+        if-no-files-found: ignore
