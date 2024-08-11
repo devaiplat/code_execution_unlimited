@@ -1,0 +1,130 @@
+name: dickwolff/Export-To-Ghostfolio
+run-name: Test Converters
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  run-tests:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 20
+    - run: npm install
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - run: npm run test
+      env:
+        E2G_CACHE_FOLDER: tmp/e2g-cache
+    - name: Convert code coverage results for summary
+      uses: irongut/CodeCoverageSummary@v1.3.0
+      with:
+        filename: coverage/*.xml
+        badge: true
+        format: markdown
+        output: file
+    - name: Add code coverage PR comment (if owner)
+      uses: marocchino/sticky-pull-request-comment@v2
+      if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dickwolff'
+      with:
+        recreate: true
+        path: code-coverage-results.md
+    - name: Write to job summary
+      run: cat code-coverage-results.md >> $GITHUB_STEP_SUMMARY
+    - name: Convert code coverage results for badge
+      uses: irongut/CodeCoverageSummary@v1.3.0
+      if: github.event_name != 'pull_request'
+      with:
+        filename: coverage/*.xml
+        hide_branch_rate: true
+        hide_complexity: true
+        badge: true
+        output: file
+    - name: Extract code coverage badge
+      if: github.event_name != 'pull_request'
+      run: |
+        read -r line < code-coverage-results.txt 
+
+
+        coverage=$(echo "$line" | sed -n 's/.*Code%20Coverage-\([0-9]*\)%.*/\1/p')
+
+        condition=$(echo "$line" | sed -n 's/.*%25-\([a-z]*\)?.*/\1/p')
+
+        [[ $condition == "critical" ]] && color="#e05d44" || color="#44cc11"
+
+
+        cat <<EOF > cov.json
+
+        {
+          "schemaVersion": 1,
+          "label": "Code Coverage",
+          "message": "$coverage%",
+          "style": "for-the-badge",
+          "color": "$color"
+        }
+    - name: Publish code coverage badge
+      uses: exuanbo/actions-deploy-gist@v1
+      if: github.event_name != 'pull_request'
+      with:
+        token: ${{ secrets.GIST_SECRET }}
+        gist_id: dd5dc24ffa62de59b3d836f856f48a10
+        file_path: cov.json
