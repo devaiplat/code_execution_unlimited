@@ -1,0 +1,41 @@
+name: serverless/serverless
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Trigger Sync Docs Workflow
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.WORKFLOW_TOKEN }}
+        script: >
+          console.log(`Triggering sync-docs workflow for stage: ${{ github.event.inputs.stage || 'dev' }}`);
+
+          await github.rest.actions.createWorkflowDispatch({
+            owner: 'serverlessinc',
+            repo: 'growth',
+            workflow_id: 'sync-docs.yml', // Replace with the actual workflow file name in the target repo
+            ref: 'main',
+            inputs: {
+              stage: '${{ github.event.inputs.stage || 'dev' }}'
+            }
+          });
