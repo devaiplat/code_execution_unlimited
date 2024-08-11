@@ -1,0 +1,29 @@
+name: ganapativs/react-dynamic-import
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/stale@v1
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        stale-issue-message: "This issue is stale because it has been open 15 days with no activity \U0001F615 Remove stale label or comment or this will be closed in 5 days."
+        stale-pr-message: "This pull request had no activity recently. probably needs attention? \U0001F913"
+        stale-issue-label: no-issue-activity
+        stale-pr-label: no-pr-activity
+        days-before-stale: 15
+        days-before-close: 5
