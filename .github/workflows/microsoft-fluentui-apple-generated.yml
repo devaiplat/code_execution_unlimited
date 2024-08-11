@@ -1,0 +1,44 @@
+name: microsoft/fluentui-apple
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  Localize:
+    runs-on: ubuntu-latest
+    environment: localization
+    permissions:
+      actions: read
+      contents: read
+      deployments: read
+      packages: read
+      pull-requests: write
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - shell: bash
+      name: Localize
+      env:
+        TDBUILD_TEAM_ID: ${{ secrets.TDBUILD_TEAM_ID }}
+        TDBUILD_AAD_APPLICATION_CLIENT_ID: ${{ secrets.TDBUILD_AAD_APPLICATION_CLIENT_ID }}
+        TDBUILD_AAD_APPLICATION_CLIENT_SECRET: ${{ secrets.TDBUILD_AAD_APPLICATION_CLIENT_SECRET }}
+      run: scripts/localize.sh
+    - name: Create Pull Request
+      run: scripts/create_localization_pr.sh
+      env:
+        GITHUB_TOKEN: ${{ secrets.MSF_TOKEN }}
+        EMAIL: ${{ secrets.EMAIL }}
+        NAME: ${{ vars.NAME }}
