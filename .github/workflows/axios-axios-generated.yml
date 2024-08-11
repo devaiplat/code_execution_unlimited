@@ -1,0 +1,40 @@
+name: axios/axios
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: git config
+      run: |
+        git config user.name "${GITHUB_ACTOR}"
+
+        git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+    - name: Setup node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+        cache: npm
+    - run: npm ci
+    - name: Notify published PRs
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: node ./bin/actions/notify_published.js --tag ${{ github.event.inputs.tag || github.event.release.tag_name }}
