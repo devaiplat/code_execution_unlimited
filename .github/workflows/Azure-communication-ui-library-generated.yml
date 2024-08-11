@@ -1,0 +1,61 @@
+name: Azure/communication-ui-library
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  runTDBuild:
+    name: Run Touchdown build
+    runs-on: ubuntu-latest
+    permissions: read-all
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Trigger touchdown build pipeline. Commit changes if specified on workflow dispatch input.
+      uses: Azure/pipelines@v1.2
+      with:
+        azure-devops-project-url: https://skype.visualstudio.com/SCC
+        azure-pipeline-name: Azure.communication-ui-library-touchdown-build
+        azure-devops-token: ${{ secrets.AZURE_TOUCHDOWN_BUILD_PIPELINE_SECRET }}
+        azure-pipeline-variables: "{'commit': ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit_strings }} }"
+  check_failure:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    needs: runTDBuild
+    if: true
+    name: Create GitHub issue on failure
+    steps:
+    - name: Create GitHub issue
+      id: create-issue
+      run: |
+        # check for an issue that is already open
+
+        curl -H "Accept: application/vnd.github.v3+json" https://api.github.com/search/issues?q=org:Azure+repo:communication-ui-library+label:TDBUILD_FAILURE+state:open > $HOME/tdbuild_issues.json
+
+        issue_count=$(jq -r '.total_count' $HOME/tdbuild_issues.json)
+
+        if [ $issue_count -gt 0 ]; then
+          echo "No need to create new issue, one already exists"
+        else
+          curl -X POST -H 'authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' https://api.github.com/repos/Azure/communication-ui-library/issues -d '{"title":"Action to trigger TD Build failed", "body": "Please investigate: https://github.com/Azure/communication-ui-library/actions/runs/${{ github.run_id }}", "labels":["TDBUILD_FAILURE", "status:triage"]}'
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
