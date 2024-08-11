@@ -1,0 +1,66 @@
+name: QwikDev/qwik
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  handle-labeled:
+    if: true
+    runs-on: ubuntu-latest
+    steps:
+    - name: ensure STATUS-1 label is present
+      id: status-1-label-presence
+      run: |
+        echo present=$( 
+          node -e '
+            const labels = JSON.parse(`${{ toJSON(github.event.issue.labels.*.name) }}`);
+            console.log(labels.some(l => l.startsWith("STATUS-1:")));
+          ' 
+        ) >> $GITHUB_OUTPUT
+    - name: remove needs triage
+      if: steps.status-1-label-presence.outputs.present == 'true' && (contains(github.event.label.name, 'STATUS-2:') || contains(github.event.label.name, 'STATUS-3:'))
+      uses: actions-cool/issues-helper@v3
+      with:
+        actions: remove-labels
+        token: ${{ secrets.GITHUB_TOKEN }}
+        issue-number: ${{ github.event.issue.number }}
+        labels: 'STATUS-1: needs triage'
+    - name: needs reproduction time limit
+      if: contains(github.event.label.name, 'needs reproduction')
+      uses: actions-cool/issues-helper@v3
+      with:
+        actions: create-comment
+        token: ${{ secrets.GITHUB_TOKEN }}
+        issue-number: ${{ github.event.issue.number }}
+        body: >
+          Hello @${{ github.event.issue.user.login }}. Please provide a [minimal reproduction](https://stackoverflow.com/help/minimal-reproducible-example) using a GitHub repository or [StackBlitz](https://qwik.new). 
+
+          [Here](https://antfu.me/posts/why-reproductions-are-required#why-reproduction) is why we really need a minimal reproduction. 
+
+          Issues marked with `STATUS-2: needs reproduction` will be automatically closed if they have no activity within 14 days.
+
+          Thanks 🙏
+    - name: missing info time limit
+      if: contains(github.event.label.name, 'missing info')
+      uses: actions-cool/issues-helper@v3
+      with:
+        actions: create-comment
+        token: ${{ secrets.GITHUB_TOKEN }}
+        issue-number: ${{ github.event.issue.number }}
+        body: >
+          Hello @${{ github.event.issue.user.login }}. Please provide the missing information requested above. 
+
+          Issues marked with `STATUS-2: missing info` will be automatically closed if they have no activity within 14 days.
+
+          Thanks 🙏
