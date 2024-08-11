@@ -1,0 +1,28 @@
+name: react-hook-form/react-hook-form
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  issues: write
+concurrency:
+  group: lock
+jobs:
+  action:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: dessant/lock-threads@v5
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        issue-inactive-days: 60
