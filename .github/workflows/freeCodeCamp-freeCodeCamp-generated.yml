@@ -1,0 +1,466 @@
+name: freeCodeCamp/freeCodeCamp
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        node-version:
+        - 20.x
+      fail-fast: false
+    steps:
+    - name: Checkout Source Files
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Check number of lockfiles
+      run: |
+        if [ $(find . -name 'package-lock.json' | grep -vc -e 'node_modules') -gt 0 ]
+
+        then
+          echo -e 'Error: found package-lock files in the repository.\nWe use pnpm workspaces to manage packages so all dependencies should be added via pnpm add'
+          exit 1
+        fi
+    - name: Setup pnpm
+      uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d
+      with:
+        version: 9
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: pnpm
+    - name: Set Environment variables
+      run: |
+        cp sample.env .env
+
+        cat .env
+    - name: Install node_modules
+      run: pnpm install
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Check formatting
+      run: |
+        pnpm prettier --check . || [ $? -eq 1 ] && printf "\nTip: Run 'pnpm run format' in your terminal to fix this.\n\n"
+    - name: Lint Source Files
+      run: |
+        echo pnpm version $(pnpm -v)
+
+        pnpm run create:shared
+
+        pnpm run build:curriculum
+
+        pnpm run lint
+  build:
+    name: Build
+    needs: lint
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        node-version:
+        - 20.x
+    steps:
+    - name: Checkout Source Files
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup pnpm
+      uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d
+      with:
+        version: 9
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: pnpm
+    - name: Set freeCodeCamp Environment Variables
+      run: |
+        cp sample.env .env
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install and Build
+      run: |
+        pnpm install
+
+        pnpm run build
+  test:
+    name: Test
+    needs: build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+        - 20.x
+    steps:
+    - name: Checkout Source Files
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup pnpm
+      uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d
+      with:
+        version: 9
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: pnpm
+    - name: Set Environment variables
+      run: |
+        cp sample.env .env
+
+        cat .env
+    - name: Start MongoDB
+      uses: supercharge/mongodb-github-action@b0a1493307c4e9b82ed61f3858d606c5ff190c64
+      with:
+        mongodb-version: 6.0
+        mongodb-replica-set: test-rs
+        mongodb-port: 27017
+    - name: Install Dependencies
+      run: |
+        echo pnpm version $(pnpm -v)
+
+        pnpm install
+    - name: Install Chrome for Puppeteer
+      run: pnpm -F=curriculum install-puppeteer
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Tests (ces) (ces)
+      run: pnpm test
+  test-upcoming:
+    name: Test - Upcoming Changes
+    needs: build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+        - 20.x
+    steps:
+    - name: Checkout Source Files
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup pnpm
+      uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d
+      with:
+        version: 9
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: pnpm
+    - name: Set Environment variables
+      run: |
+        cp sample.env .env
+
+        echo 'SHOW_UPCOMING_CHANGES=true' >> .env
+
+        echo 'SHOW_NEW_CURRICULUM=true' >> .env
+
+        cat .env
+    - name: Start MongoDB
+      uses: supercharge/mongodb-github-action@b0a1493307c4e9b82ed61f3858d606c5ff190c64
+      with:
+        mongodb-version: 6.0
+        mongodb-replica-set: test-rs
+        mongodb-port: 27017
+    - name: Install Dependencies
+      run: |
+        echo pnpm version $(pnpm -v)
+
+        pnpm install
+    - name: Install Chrome for Puppeteer
+      run: pnpm -F=curriculum install-puppeteer
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Tests (ces) (ces)
+      run: pnpm test
+  test-localization:
+    name: Test - i18n
+    needs: build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+        - 20.x
+        locale:
+        - portuguese
+        - italian
+    steps:
+    - name: Checkout Source Files
+      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup pnpm
+      uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d
+      with:
+        version: 9
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: pnpm
+    - name: Set Environment variables
+      run: |
+        cp sample.env .env
+
+        cat .env
+    - name: Start MongoDB
+      uses: supercharge/mongodb-github-action@b0a1493307c4e9b82ed61f3858d606c5ff190c64
+      with:
+        mongodb-version: 6.0
+        mongodb-replica-set: test-rs
+        mongodb-port: 27017
+    - name: Install Dependencies
+      env:
+        CURRICULUM_LOCALE: ${{ matrix.locale }}
+        CLIENT_LOCALE: ${{ matrix.locale }}
+      run: |
+        echo pnpm version $(pnpm -v)
+
+        pnpm install
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build Client in ${{ matrix.locale }}
+      env:
+        CURRICULUM_LOCALE: ${{ matrix.locale }}
+        CLIENT_LOCALE: ${{ matrix.locale }}
+      run: |
+        pnpm run build
+    - name: Install Chrome for Puppeteer
+      run: pnpm -F=curriculum install-puppeteer
+    - name: Run Tests (ces)
+      env:
+        CURRICULUM_LOCALE: ${{ matrix.locale }}
+        CLIENT_LOCALE: ${{ matrix.locale }}
+      run: pnpm test
