@@ -1,0 +1,49 @@
+name: dhis2/import-export-app
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow}}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v1
+      with:
+        node-version: 16.x
+    - uses: c-hive/gha-yarn-cache@v1
+    - run: yarn install --frozen-lockfile
+    - name: Build
+      run: yarn d2-app-scripts build --standalone
+    - name: Deploy
+      id: netlify-deploy
+      uses: nwtgck/actions-netlify@v1.1
+      timeout-minutes: 1
+      with:
+        github-token: ${{ secrets.DHIS2_BOT_GITHUB_TOKEN }}
+        deploy-message: ${{ github.event.pull_request.title }}
+        enable-pull-request-comment: true
+        enable-commit-comment: false
+        alias: pr-${{ github.event.number }}
+        publish-dir: build/app
+      env:
+        NETLIFY_AUTH_TOKEN: ${{ secrets.DHIS2_BOT_NETLIFY_TOKEN }}
+        NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
