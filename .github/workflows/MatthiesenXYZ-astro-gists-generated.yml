@@ -1,0 +1,48 @@
+name: MatthiesenXYZ/astro-gists
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  CI: true
+jobs:
+  version:
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+    - name: checkout code repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: setup node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: install pnpm
+      run: npm i pnpm@8.14.1 -g
+    - name: Setup npmrc
+      run: echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > .npmrc
+    - name: install dependencies
+      run: pnpm install
+    - name: create and publish versions
+      uses: matthiesenxyz/changeset@v1
+      with:
+        version: pnpm ci:version
+        commit: 'chore: update versions'
+        title: "\U0001F477 [ci]: Ready for Release"
+        publish: pnpm ci:publish
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
