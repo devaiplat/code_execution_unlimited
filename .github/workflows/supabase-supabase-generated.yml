@@ -1,0 +1,45 @@
+name: supabase/supabase
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  update-docs:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        sparse-checkout: >
+          apps/docs
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: .nvmrc
+        cache: npm
+    - name: Install deps
+      run: npm ci
+    - name: Change to apps/docs/spec directory and run make command
+      working-directory: apps/docs/spec
+      run: make download.api.v1 dereference.api.v1 generate.sections.api.v1 format
+    - name: Create pull request
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'feat: update mgmt api docs'
+        title: 'feat: update mgmt api docs'
+        body: This PR updates mgmt api docs automatically.
+        branch: gha/auto-update-mgmt-api-docs
+        base: master
