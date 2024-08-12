@@ -1,0 +1,205 @@
+name: clerk/javascript
+run-name: Deploy Preview by ${{ github.actor }}
+env:
+  COMMENT_HEADER: javascript-preview
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.actor }}
+  cancel-in-progress: true
+jobs:
+  preview:
+    if: true
+    runs-on: ${{ vars.RUNNER_NORMAL || 'ubuntu-latest' }}
+    timeout-minutes: ${{ vars.TIMEOUT_MINUTES_NORMAL && fromJSON(vars.TIMEOUT_MINUTES_NORMAL) || 10 }}
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_CLERK_PROD_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_JS_PREVIEW_PROJECT_ID }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+    - name: Limit action to Clerk members
+      uses: actions/github-script@v7
+      with:
+        result-encoding: string
+        retries: 3
+        retry-exempt-status-codes: 400,401
+        github-token: ${{ secrets.CLERK_COOKIE_PAT }}
+        script: >
+          const isMember = await github.rest.orgs.checkMembershipForUser({
+            org: 'clerk',
+            username: context.actor
+          });
+
+          if (!isMember) {
+            core.setFailed(`@${actor} is not a member of the Clerk organization`);
+          }
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Ensure the PR hasn't changed since initiating the !preview command.
+      uses: actions/github-script@v7
+      with:
+        result-encoding: string
+        retries: 3
+        retry-exempt-status-codes: 400,401
+        github-token: ${{ secrets.CLERK_COOKIE_PAT }}
+        script: >
+          const commentCreated = new Date(context.payload.comment.created_at);
+
+
+          const pr = await github.rest.pulls.get({
+            owner: 'clerk',
+            repo: 'javascript',
+            pull_number: context.issue.number,
+          });
+
+
+          const prLastUpdated = new Date(pr.updated_at);
+
+
+          if (prLastUpdated > commentCreated) {
+            core.setFailed("The PR has been updated since !preview was initiated. Please review the changes and re-run the !preview command.");
+          }
+    - name: Setup
+      id: config
+      uses: ./.github/actions/init
+      with:
+        turbo-signature: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+        turbo-team: ${{ vars.TURBO_TEAM }}
+        turbo-token: ${{ secrets.TURBO_TOKEN }}
+        registry-url: https://registry.npmjs.org
+    - name: Build packages
+      run: npx turbo build $TURBO_ARGS
+    - name: Get date
+      run: |
+        echo "DATE=$(date -u +"%b %d, %Y %I:%M %p")" >> $GITHUB_ENV
+    - name: Install site in isolation
+      run: node scripts/install-site-in-isolation.mjs playground/nextjs
+    - name: Install Vercel CLI
+      run: npm install --global vercel@latest
+    - name: Pull Vercel environment information
+      run: |
+        cd $FULL_TMP_FOLDER
+
+        vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Copy clerk-js/dist into public/clerk-js of test site (ces) (ces)
+      run: |
+        cp -r $GITHUB_WORKSPACE/packages/clerk-js/dist $FULL_TMP_FOLDER/public/clerk-js
+    - name: Build with Vercel
+      run: |
+        cd $FULL_TMP_FOLDER
+
+        vercel build --yes
+      env:
+        NEXT_PUBLIC_CLERK_JS_URL: /clerk-js/clerk.browser.js
+    - name: Deploy to Vercel (prebuilt)
+      id: vercel-deploy
+      run: |
+        cd $FULL_TMP_FOLDER
+
+        vercel deploy --prebuilt --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }} --no-wait > deployment_url.txt
+
+        echo "url=$(cat deployment_url.txt)" >> $GITHUB_OUTPUT
+    - name: Create preview comment - Deploying
+      uses: marocchino/sticky-pull-request-comment@v2.8.0
+      with:
+        GITHUB_TOKEN: ${{ secrets.CLERK_COOKIE_PAT }}
+        number: ${{ github.event.issue.number }}
+        header: ${{ env.COMMENT_HEADER}}
+        message: >
+          Hey @${{ github.event.comment.user.login }}, your preview is currently deploying and should be available shortly.
+
+
+          | Status | Preview | Updated (UTC) |
+
+          | :-- | :-- | :-- |
+
+          | :cook: _Deploying..._ | [Inspect](${{ steps.vercel-deploy.outputs.url }}) | ${{ env.DATE }} |
+    - name: Get date
+      run: |
+        echo "DATE=$(date -u +"%b %d, %Y %I:%M %p")" >> $GITHUB_ENV
+    - name: Wait for deployment
+      id: vercel-wait-for-deploy
+      run: |
+        vercel inspect --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }} --wait ${{ steps.vercel-deploy.outputs.url }} --timeout 10m --scope clerk-production
+
+        vercel alias set ${{ steps.vercel-deploy.outputs.url }} javascript-preview-${{ github.event.issue.number }}.clerkpreview.com --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }} --scope clerk-production
+
+        echo "stable_url=https://javascript-preview-${{ github.event.issue.number }}.clerkpreview.com" >> $GITHUB_OUTPUT
+    - name: Create preview comment - Deployed
+      uses: marocchino/sticky-pull-request-comment@v2.8.0
+      with:
+        GITHUB_TOKEN: ${{ secrets.CLERK_COOKIE_PAT }}
+        number: ${{ github.event.issue.number }}
+        header: ${{ env.COMMENT_HEADER }}
+        message: >
+          Hey @${{ github.event.comment.user.login }}, your preview is available.
+
+
+          | Status | Preview | Updated (UTC) |
+
+          | :-- | :-- | :-- |
+
+          | :cookie: Deployed | [Visit preview](${{ steps.vercel-wait-for-deploy.outputs.stable_url }}) | ${{ env.DATE }} |
+
+
+          <!-- deployed:true -->
