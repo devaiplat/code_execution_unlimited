@@ -1,0 +1,42 @@
+name: stylelint/stylelint
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+    - name: Comment on old issues
+      run: |
+        one_month_ago=$(date --date '1 month ago' '+%Y-%m-%d')
+
+
+        # For the search syntax, see https://docs.github.com/en/search-github/searching-on-github/searching-issues-and-pull-requests
+
+        old_issue_urls=$(gh issue list \
+          --search "is:open updated:<${one_month_ago} label:\"status: ready to implement\"" \
+          --json 'url' \
+          --jq '.[] | .url')
+
+        for url in ${old_issue_urls}; do
+          gh issue comment "${url}" --body "${issue_comment}"
+          gh issue edit "${url}" --add-label 'status: ask to implement' --remove-label 'status: ready to implement'
+        done
+      env:
+        GH_REPO: ${{ github.repository }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        issue_comment: This issue is older than one month. Please ask before opening a pull request, as it may no longer be relevant.
