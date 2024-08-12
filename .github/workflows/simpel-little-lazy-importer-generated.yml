@@ -1,0 +1,46 @@
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+    - run: |
+        git config --global user.email "me@joelsanden.se"
+
+        git config --global user.name "Joel Sandén"
+    - name: Checkout master
+      uses: actions/checkout@master
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Run yarn
+      run: yarn
+    - name: Sort package.json
+      run: npx sort-package-json
+    - name: Sort package.json
+      run: git add package.json
+    - name: Release new version
+      run: yarn release
+    - name: Commit new version
+      run: git push --follow-tags origin main
+    - name: Publish
+      if: success()
+      run: yarn deploy
+      env:
+        VSCE_PAT: ${{ secrets.VS_CODE_MARKETPLACE_ACCESS_TOKEN }}
+name: simpel/little-lazy-importer
