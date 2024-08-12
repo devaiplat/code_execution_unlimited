@@ -1,0 +1,39 @@
+name: starbeamjs/starbeam
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: publish-unstable-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  publish:
+    name: NPM Publish
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: NullVoxPopuli/action-setup-pnpm@v2
+      with:
+        node-registry-url: https://registry.npmjs.org
+    - name: build
+      run: pnpm build
+    - name: set versions
+      run: node ./workspace/unstable-release/src/version.js
+    - name: npm publish
+      run: node ./workspace/unstable-release/src/publish.js
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
