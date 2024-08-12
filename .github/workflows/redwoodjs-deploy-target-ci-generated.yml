@@ -1,0 +1,85 @@
+name: redwoodjs/deploy-target-ci
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  deploy-baremetal:
+    if: true
+    name: "\U0001F918 Deploy Baremetal"
+    runs-on: ubuntu-latest
+    env:
+      REDWOOD_CI: 1
+    defaults:
+      run:
+        working-directory: ./baremetal
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: ⬢ Enable Corepack
+      run: corepack enable
+    - name: ⬢ Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: "\U0001F408 Yarn install"
+      run: yarn install --inline-builds
+    - name: "\U0001F511 Setup SSH Keys and known_hosts"
+      run: |
+        ssh-agent -a $SSH_AUTH_SOCK > /dev/null
+
+        ssh-add - <<< "${{ secrets.SSH_PRIVATE_KEY_BAREMETAL }}"
+      env:
+        SSH_AUTH_SOCK: /tmp/ssh_agent.sock
+    - name: "\U0001F680 Deploy"
+      run: yarn rw deploy baremetal production
+      env:
+        SSH_AUTH_SOCK: /tmp/ssh_agent.sock
+  message-slack:
+    needs: deploy-baremetal
+    if: true
+    name: "\U0001F4AC Message Slack"
+    runs-on: ubuntu-latest
+    steps:
+    - name: Get `deploy_status`
+      run: |
+        RW_DEPLOY_STATUS=$(echo '{
+          "failure": "Deploy failed 🚨",
+          "success": "Deploy successful ✅",
+          "cancelled": "Deploy cancelled 🔘",
+          "skipped": "Deploy skipped 🔘"
+          }' | \
+            jq -r .${{ needs.deploy-baremetal.result }}
+        )
+
+
+        echo "RW_DEPLOY_STATUS=$RW_DEPLOY_STATUS" >> $GITHUB_ENV
+    - name: Get `deploy_commit`
+      run: |
+        RW_DEPLOY_COMMIT=$(echo '${{ github.event.head_commit.message }}' | awk 'NR==1 {print}')
+
+        echo "RW_DEPLOY_COMMIT=$RW_DEPLOY_COMMIT" >> $GITHUB_ENV
+    - name: "\U0001F4AC Message Slack"
+      uses: slackapi/slack-github-action@v1
+      with:
+        payload: >
+          {
+            "deploy_target": "Baremetal 🤘",
+            "deploy_status": "${{ env.RW_DEPLOY_STATUS }}",
+            "deploy_commit": "${{ env.RW_DEPLOY_COMMIT }}"
+          }            
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
