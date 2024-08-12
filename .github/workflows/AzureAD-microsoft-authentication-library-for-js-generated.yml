@@ -1,0 +1,35 @@
+name: AzureAD/microsoft-authentication-library-for-js
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: audit-${{github.ref}}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  audit-root:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 18
+    - name: npm audit (root)
+      run: npm audit --workspace=lib/** --workspace=extensions/** --include-workspace-root --omit=dev
