@@ -1,0 +1,37 @@
+name: QwikDev/qwik-image
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node_version:
+        - 20
+    steps:
+    - name: Cancel Previous Runs
+      uses: styfle/cancel-workflow-action@0.11.0
+      if: github.event_name == 'pull_request'
+      with:
+        access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup
+      uses: ./.github/actions/setup
+      with:
+        node_version: ${{ matrix.node_version }}
