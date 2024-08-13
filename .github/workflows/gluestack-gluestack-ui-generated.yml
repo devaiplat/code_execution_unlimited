@@ -1,0 +1,33 @@
+name: gluestack/gluestack-ui
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    name: Dispatch to 'gluestack-style-website'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Emit repository_dispatch
+      uses: mvasigh/dispatch-action@main
+      with:
+        token: ${{ secrets.MY_GITHUB_TOKEN }}
+        repo: ui-website
+        owner: gluestack
+        event_type: build_ui_docs
+        message: >
+          {
+            "repo": "ui",
+            "branch": "${{ github.head_ref }}"
+          }
