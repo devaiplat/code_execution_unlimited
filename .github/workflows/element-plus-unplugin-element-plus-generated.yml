@@ -1,0 +1,42 @@
+name: element-plus/unplugin-element-plus
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  gh-pages:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set node
+      uses: actions/setup-node@v3
+      with:
+        node-version: lts/*
+    - name: Setup
+      run: npm i -g @antfu/ni
+    - name: Install
+      run: nci
+    - name: Build
+      run: nr build
+    - name: Install Example Dependencies & Build
+      run: pnpm -C examples/vite run build
+    - name: Deploy
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./examples/vite/dist
+        force_orphan: true
