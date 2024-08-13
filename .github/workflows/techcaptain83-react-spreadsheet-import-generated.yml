@@ -1,0 +1,42 @@
+name: techcaptain83/react-spreadsheet-import
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  release:
+    if: true
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Build Changelog
+      id: github_release
+      uses: mikepenz/release-changelog-builder-action@v2.0.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        configuration: .github/config/configuration.json
+        commitMode: true
+    - name: Create Release
+      uses: actions/create-release@v1
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: ${{ github.ref }}
+        body: ${{steps.github_release.outputs.changelog}}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
