@@ -18,7 +18,6 @@ env:
   USE_JAVA_DISTRIBUTION: zulu
   USE_JAVA_VERSION: 11
   USE_JAVA_VERSION_FOR_PLUGIN: 17
-  DAGGER_RELEASE_VERSION: ${{ github.event.inputs.dagger_release_version }}
   USE_MAVEN_VERSION: 3.8.7
 jobs:
   validate-latest-dagger-version:
@@ -104,14 +103,36 @@ jobs:
       with:
         agp: ${{ matrix.agp }}
         jdk: ${{ matrix.jdk }}
-  publish-artifacts:
-    name: Publish Artifact
+  artifact-android-emulator-legacy-api-tests:
+    name: Artifact Android emulator tests (API ${{ matrix.api-level }})
+    if: true
+    needs: bazel-build
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        api-level:
+        - 16
+        - 21
+        - 26
+        - 30
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./.github/actions/artifact-android-emulator-tests
+      timeout-minutes: 35
+      with:
+        api-level: ${{ matrix.api-level }}
+  publish-snapshot:
+    name: Publish snapshot
     needs:
     - bazel-test
     - artifact-verification-tests
     - artifact-java-local-tests
     - artifact-android-local-tests
     - test-gradle-plugin
+    if: true
     runs-on: ubuntu-latest
     steps:
     - name: Install Java ${{ env.USE_JAVA_VERSION }}
@@ -119,11 +140,9 @@ jobs:
       with:
         distribution: ${{ env.USE_JAVA_DISTRIBUTION }}
         java-version: ${{ env.USE_JAVA_VERSION }}
-        server-id: sonatype-nexus-staging
+        server-id: sonatype-nexus-snapshots
         server-username: CI_DEPLOY_USERNAME
         server-password: CI_DEPLOY_PASSWORD
-        gpg-private-key: ${{ secrets.CI_GPG_PRIVATE_KEY }}
-        gpg-passphrase: CI_GPG_PASSPHRASE
     - name: Check out repository
       uses: actions/checkout@v3
       with:
@@ -156,35 +175,95 @@ jobs:
         key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
         restore-keys: >
           ${{ runner.os }}-gradle-
-    - name: Publish artifacts
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Publish latest docs (ces) (ces)
+      run: ./util/generate-latest-docs.sh
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Publish latest snapshot (ces)
       run: |
         util/deploy-all.sh \
-          "gpg:sign-and-deploy-file" \
-          "${{ env.DAGGER_RELEASE_VERSION }}" \
-          "-DrepositoryId=sonatype-nexus-staging" \
-          "-Durl=https://oss.sonatype.org/service/local/staging/deploy/maven2/"
+          "deploy:deploy-file" \
+          "HEAD-SNAPSHOT" \
+          "-DrepositoryId=sonatype-nexus-snapshots" \
+          "-Durl=https://oss.sonatype.org/content/repositories/snapshots"
       shell: bash
       env:
         CI_DEPLOY_USERNAME: ${{ secrets.CI_DEPLOY_USERNAME }}
         CI_DEPLOY_PASSWORD: ${{ secrets.CI_DEPLOY_PASSWORD }}
-        CI_GPG_PASSPHRASE: ${{ secrets.CI_GPG_PASSPHRASE }}
-    - name: Set git credentials
-      run: |
-        git config --global user.email "dagger-dev+github@google.com"
-
-        git config --global user.name "Dagger Team"
-      shell: bash
-    - name: Publish tagged release
-      run: util/publish-tagged-release.sh ${{ env.DAGGER_RELEASE_VERSION }}
-      shell: bash
-    - name: Publish tagged docs
-      run: util/publish-tagged-docs.sh ${{ env.DAGGER_RELEASE_VERSION }}
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
     - name: Clean bazel cache
       run: |
         rm -rf $(bazel info repository_cache)
 
         rm -rf ~/.cache/bazel/*/*/external/
       shell: bash
+  build-gradle-plugin-latest-agp:
+    name: Build Hilt Gradle plugin against latest AGP version
+    if: true
+    needs: bazel-build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./.github/actions/build-gradle-plugin
+      with:
+        agp: +
+  cleanup-caches:
+    name: Clean up GitHub Action caches
+    needs:
+    - bazel-test
+    - artifact-verification-tests
+    - artifact-java-local-tests
+    - artifact-android-local-tests
+    - test-gradle-plugin
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./.github/actions/cleanup-caches
