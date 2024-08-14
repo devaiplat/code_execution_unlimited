@@ -1,4 +1,7 @@
 name: sanity-io/sanity-template-nextjs-landing-pages
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 on:
   workflow_dispatch:
     inputs:
@@ -18,8 +21,8 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 jobs:
-  run:
-    name: "\U0001F914"
+  next:
+    name: Next.js
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b
@@ -29,11 +32,116 @@ jobs:
     - uses: actions/setup-node@2fddd8803e2f5c9604345a0b591c3020ee971a93
       with:
         node-version: lts/*
-    - run: npm install --ignore-scripts --only-dev
-    - name: check if workflows needs prettier
-      run: npx prettier --cache --check ".github/workflows/**/*.yml" || (echo "An action can't make changes to actions, you'll have to run prettier manually" && exit 1)
-    - run: npx prettier --ignore-path .gitignore --cache --write .
-    - uses: EndBug/add-and-commit@d4d066316a2a85974a05efb42be78f897793c6d9
+        cache: npm
+    - run: npm i -g vercel@latest
+    - run: vercel env pull --token=${{ secrets.VERCEL_TOKEN }}
+    - run: npm ci --ignore-scripts
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - run: npm run build:web
+    - run: npm run lint --if-present
+    - run: npm run test --if-present
+  studio:
+    name: Studio
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./studio
+    steps:
+    - uses: actions/checkout@2541b1294d2704b0964813337f33b291d3f8596b
       with:
-        commit: --no-verify
-        message: "chore(prettier): \U0001F916 ✨"
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@2fddd8803e2f5c9604345a0b591c3020ee971a93
+      with:
+        node-version: lts/*
+        cache: yarn
+        cache-dependency-path: studio/yarn.lock
+    - run: yarn global add vercel
+    - run: vercel env pull .env.development --token=${{ secrets.VERCEL_TOKEN }}
+    - run: yarn install --frozen-lockfile
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - run: npm run build --if-present
+    - run: npm run lint --if-present
+    - run: npm run test --if-present
