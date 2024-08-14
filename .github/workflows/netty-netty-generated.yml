@@ -14,101 +14,28 @@ on:
       ref:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
-permissions: read-all
 env:
   MAVEN_OPTS: -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryhandler.count=5 -Dmaven.wagon.httpconnectionManager.ttlSeconds=240
+permissions:
+  contents: read
 jobs:
-  prepare-release:
+  build:
     runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        ref: ${{ github.event.inputs.ref }}
-        repository: ${{ github.event.inputs.repoName }}
-    - name: Set up JDK 8
-      uses: actions/setup-java@v4
-      with:
-        distribution: zulu
-        java-version: 8
-    - name: Setup git configuration
-      run: |
-        git config --global user.email "netty-project-bot@users.noreply.github.com"
-
-        git config --global user.name "Netty Project Bot"
-    - name: Install SSH key
-      uses: shimataro/ssh-key-action@v2
-      with:
-        key: ${{ secrets.SSH_PRIVATE_KEY_PEM }}
-        known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
-    - name: Cache local Maven repository
-      uses: actions/cache@v4
-      continue-on-error: true
-      with:
-        path: ~/.m2/repository
-        key: ${{ runner.os }}-maven-prepare-release-${{ hashFiles('**/pom.xml') }}
-        restore-keys: >
-          ${{ runner.os }}-maven-prepare-release-
-
-          ${{ runner.os }}-maven-
-    - name: Prepare release with Maven
-      run: |
-        ./mvnw -B -ntp --file pom.xml release:prepare -DpreparationGoals=clean -DskipTests=true
-
-        ./mvnw -B -ntp clean
-    - name: Checkout tag
-      run: ./.github/scripts/release_checkout_tag.sh release.properties
-    - name: Upload workspace
-      uses: actions/upload-artifact@v4
-      with:
-        name: prepare-release-workspace
-        path: ${{ github.workspace }}/**
-  stage-release-linux:
-    runs-on: ubuntu-latest
-    needs: prepare-release
     strategy:
       matrix:
         include:
-        - setup: linux-x86_64-java8
-          docker-compose-build: -f docker/docker-compose.yaml -f docker/docker-compose.centos-6.18.yaml build
-          docker-compose-run: -f docker/docker-compose.yaml -f docker/docker-compose.centos-6.18.yaml run stage-release
-        - setup: linux-aarch64
-          docker-compose-build: -f docker/docker-compose.centos-7.yaml build
-          docker-compose-run: -f docker/docker-compose.centos-7.yaml run cross-compile-aarch64-stage-release
-        - setup: linux-riscv64
-          docker-compose-build: -f docker/docker-compose.ubuntu-20.04.yaml build
-          docker-compose-run: -f docker/docker-compose.ubuntu-20.04.yaml run cross-compile-riscv64-stage-release
-    name: stage-release-${{ matrix.setup }}
+        - setup: linux-x86_64-java11
+          docker-compose-build: -f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml build
+          docker-compose-run: -f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml run build
+        - setup: linux-x86_64-java11-boringssl-snapshot
+          docker-compose-build: -f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml build
+          docker-compose-run: -f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml run build-boringssl-snapshot
+    name: ${{ matrix.setup }}
     steps:
-    - name: Download release-workspace
-      uses: actions/download-artifact@v4
+    - uses: actions/checkout@v4
       with:
-        name: prepare-release-workspace
-        path: ./prepare-release-workspace/
-    - name: Adjust mvnw permissions
-      run: chmod 755 ./prepare-release-workspace/mvnw
-    - name: Set up JDK 8
-      uses: actions/setup-java@v4
-      with:
-        distribution: zulu
-        java-version: 8
-    - name: Setup git configuration
-      run: |
-        git config --global user.email "netty-project-bot@users.noreply.github.com"
-
-        git config --global user.name "Netty Project Bot"
-    - name: Install SSH key
-      uses: shimataro/ssh-key-action@v2
-      with:
-        key: ${{ secrets.SSH_PRIVATE_KEY_PEM }}
-        known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
-    - uses: s4u/maven-settings-action@v3.0.0
-      with:
-        servers: >
-          [{
-            "id": "sonatype-nexus-staging",
-            "username": "${{ secrets.SONATYPE_USERNAME }}",
-            "password": "${{ secrets.SONATYPE_PASSWORD }}"
-          }]
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
     - name: Cache local Maven repository
       uses: actions/cache@v4
       continue-on-error: true
@@ -119,94 +46,64 @@ jobs:
           ${{ runner.os }}-maven-${{ matrix.setup }}-
 
           ${{ runner.os }}-maven-
-    - name: Create local staging directory
-      run: mkdir -p ~/local-staging
     - name: Build docker image
-      working-directory: ./prepare-release-workspace/
       run: docker compose ${{ matrix.docker-compose-build }}
-    - name: Stage release to local staging directory
-      working-directory: ./prepare-release-workspace/
-      env:
-        GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-        GPG_KEYNAME: ${{ secrets.GPG_KEYNAME }}
-        GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-      run: docker compose ${{ matrix.docker-compose-run }}
-    - name: Upload local staging directory
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.setup }}-local-staging
-        path: ~/local-staging
-        if-no-files-found: error
-    - name: Rollback release on failure
-      working-directory: ./prepare-release-workspace/
-      if: ${{ failure() }}
-      run: bash ./.github/scripts/release_rollback.sh release.properties netty/netty 4.2
-  deploy-staged-release:
-    runs-on: ubuntu-latest
-    needs: stage-release-linux
-    steps:
-    - name: Download release-workspace
-      uses: actions/download-artifact@v4
-      with:
-        name: prepare-release-workspace
-        path: ./prepare-release-workspace/
-    - name: Adjust mvnw permissions
-      run: chmod 755 ./prepare-release-workspace/mvnw
-    - name: Set up JDK 8
-      uses: actions/setup-java@v4
-      with:
-        distribution: zulu
-        java-version: 8
-    - name: Setup git configuration
+    - name: Build project without leak detection
+      run: docker compose ${{ matrix.docker-compose-run }} | tee build.output
+    - name: Apply patch
+      shell: bash
       run: |
-        git config --global user.email "netty-project-bot@users.noreply.github.com"
 
-        git config --global user.name "Netty Project Bot"
-    - name: Install SSH key
-      uses: shimataro/ssh-key-action@v2
-      with:
-        key: ${{ secrets.SSH_PRIVATE_KEY_PEM }}
-        known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
-    - name: Download linux-aarch64 staging directory
-      uses: actions/download-artifact@v4
-      with:
-        name: linux-aarch64-local-staging
-        path: ~/linux-aarch64-local-staging
-    - name: Download linux-riscv64 staging directory
-      uses: actions/download-artifact@v4
-      with:
-        name: linux-riscv64-local-staging
-        path: ~/linux-riscv64-local-staging
-    - name: Download linux-x86_64-java8 staging directory
-      uses: actions/download-artifact@v4
-      with:
-        name: linux-x86_64-java8-local-staging
-        path: ~/linux-x86_64-java8-local-staging
-    - name: Merge staging repositories
-      working-directory: ./prepare-release-workspace/
-      run: bash ./.github/scripts/merge_local_staging.sh /home/runner/local-staging/staging ~/linux-aarch64-local-staging/staging ~/linux-riscv64-local-staging/staging ~/linux-x86_64-java8-local-staging/staging
-    - uses: s4u/maven-settings-action@v3.0.0
-      with:
-        servers: >
-          [{
-            "id": "sonatype-nexus-staging",
-            "username": "${{ secrets.SONATYPE_USERNAME }}",
-            "password": "${{ secrets.SONATYPE_PASSWORD }}"
-          }]
-    - name: Cache local Maven repository
-      uses: actions/cache@v4
-      continue-on-error: true
-      with:
-        path: ~/.m2/repository
-        key: ${{ runner.os }}-maven-deploy-staged-release-${{ hashFiles('**/pom.xml') }}
-        restore-keys: >
-          ${{ runner.os }}-maven-deploy-staged-release-
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
 
-          ${{ runner.os }}-maven-
-    - name: Deploy local staged artifacts
-      working-directory: ./prepare-release-workspace/
-      run: ./mvnw -B -ntp --file pom.xml org.sonatype.plugins:nexus-staging-maven-plugin:deploy-staged -DnexusUrl=https://oss.sonatype.org -DserverId=sonatype-nexus-staging -DaltStagingDirectory=/home/runner/local-staging -DskipStagingRepositoryClose=true
-    - name: Rollback release on failure
-      working-directory: ./prepare-release-workspace/
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Checking for test failures (ces) (ces)
+      run: ./.github/scripts/check_build_result.sh build.output
+    - name: Checking bom dependency versions
+      run: ./.github/scripts/check_bom_dependencies.sh
+    - name: print JVM thread dumps when cancelled
+      uses: ./.github/actions/thread-dump-jvms
+      if: cancelled()
+    - uses: actions/upload-artifact@v4
       if: ${{ failure() }}
-      run: bash ./.github/scripts/release_rollback.sh release.properties netty/netty 4.2
+      with:
+        name: target
+        path: >
+          **/target/surefire-reports/
+
+          **/hs_err*.log
