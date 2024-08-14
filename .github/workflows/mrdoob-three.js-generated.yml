@@ -14,34 +14,328 @@ on:
       ref:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
+permissions:
+  contents: read
 jobs:
-  analyze:
-    name: Analyze
+  lint:
+    name: Lint testing
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language:
-        - javascript
     steps:
-    - name: Checkout repository
+    - name: Git checkout
       uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
       with:
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@afb54ba388a7dca6ecae48f608c4ff05ff4cc77a
+    - name: Install Node
+      uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
       with:
-        languages: ${{ matrix.language }}
-        config-file: ./.github/codeql-config.yml
-        queries: security-and-quality
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@afb54ba388a7dca6ecae48f608c4ff05ff4cc77a
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@afb54ba388a7dca6ecae48f608c4ff05ff4cc77a
+        node-version: 18
+        cache: npm
+    - name: Install dependencies
+      run: npm ci
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: === Lint testing === (ces) (ces)
+      run: npm run lint
+  unit:
+    name: Unit testing
+    runs-on: ubuntu-latest
+    steps:
+    - name: Git checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
       with:
-        category: /language:${{matrix.language}}
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Node
+      uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+      with:
+        node-version: 18
+        cache: npm
+    - name: Install dependencies
+      run: npm ci
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: === Unit testing === (ces) (ces)
+      run: npm run test-unit
+  circular:
+    name: Circular dependencies testing
+    runs-on: ubuntu-latest
+    steps:
+    - name: Git checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Node
+      uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+      with:
+        node-version: 18
+        cache: npm
+    - name: Install dependencies
+      run: npm ci
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: === Circular dependencies testing === (ces) (ces)
+      run: npm run test-circular-deps
+  e2e:
+    name: E2E testing
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - windows-latest
+        CI:
+        - 0
+        - 1
+        - 2
+        - 3
+    env:
+      CI: ${{ matrix.CI }}
+    steps:
+    - name: Git checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Node
+      uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+      with:
+        node-version: 18
+        cache: npm
+    - name: Install dependencies
+      run: npm ci
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build
+      run: npm run build-module
+    - name: === E2E testing === (ces)
+      run: npm run test-e2e
+    - name: Upload output screenshots
+      uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a
+      if: always()
+      with:
+        name: Output screenshots-${{ matrix.os }}-${{ matrix.CI }}
+        path: test/e2e/output-screenshots
+        if-no-files-found: ignore
+  e2e-cov:
+    name: Examples ready for release
+    runs-on: ubuntu-latest
+    steps:
+    - name: Git checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Node
+      uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+      with:
+        node-version: 18
+        cache: npm
+    - name: Install dependencies
+      run: npm ci
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: === Examples ready for release ===
+      run: npm run test-e2e-cov
