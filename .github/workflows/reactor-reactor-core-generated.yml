@@ -16,40 +16,105 @@ on:
         required: false
 permissions: read-all
 jobs:
+  preliminary:
+    name: preliminary sanity checks
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Download JDK 9
+      if: contains('main 3.6.x', github.base_ref)
+      run: ${GITHUB_WORKSPACE}/.github/setup.sh
+      shell: bash
+    - name: Setup JDK 9
+      if: contains('main 3.6.x', github.base_ref)
+      uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
+      with:
+        distribution: jdkfile
+        java-version: 9.0.4
+        jdkFile: /opt/openjdk/java9/OpenJDK9U-jdk_x64_linux_hotspot_9.0.4_11.tar.gz
+    - name: Setup JDK 21
+      if: contains('main 3.6.x', github.base_ref)
+      uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
+      with:
+        distribution: temurin
+        java-version: 21
+    - name: Setup JDK 8
+      uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
+      with:
+        distribution: temurin
+        java-version: 8
+    - uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70
+      name: spotless (license header)
+      if: always()
+      with:
+        arguments: spotlessCheck -PspotlessFrom=origin/${{ github.base_ref }}
+    - uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70
+      name: api compatibility
+      if: always()
+      with:
+        arguments: japicmp
+    - name: how to fix
+      if: failure()
+      run: |
+        echo -e "\n\033[38;5;0;48;5;208m \u001b[1m How to deal with errors in preliminary job: \u001b[0m\033[0m"
+
+        echo "(Have a look at the steps above to see what failed exactly)"
+
+        echo -e "\n - \u001b[1mSpotless (license headers)\u001b[0m failures on touched java files \033[38;5;255;48;5;0m\u001b[1mcan be automatically fixed by running\u001b[0m:"
+
+        echo -e "   \033[38;5;0;48;5;255m ./gradlew spotlessApply \033[0m"
+
+        echo -e "\n - \u001b[1mAPI Compatibility\u001b[0m failures should be considered carefully and \033[38;5;255;48;5;0m\u001b[1mdiscussed with maintainers in the PR\u001b[0m"
+
+        echo "   If there are failures, the detail should be available in the step's log:"
+
+        echo -e "   Look for the \033[38;5;0;48;5;255m API compatibility failures \033[0m block(s)."
+
+        echo "   Alternatively, locally run the following command to get access to the full report:"
+
+        echo -e "   \033[38;5;0;48;5;255m ./gradlew japicmp \033[0m"
+
+        echo ""
+
+        exit -1
   run-tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        branch:
-        - 3.5.x
-        - 3.6.x
-        - main
         test-type:
         - type: core
-          arguments: :reactor-core:test --no-daemon -DuseSnapshotMicrometerVersion=true
+          arguments: :reactor-core:test --no-daemon
+        - type: core-java21
+          arguments: :reactor-core:java21Test --no-daemon
+        - type: core-java9
+          arguments: :reactor-core:java9Test --no-daemon
         - type: other
-          arguments: check -x :reactor-core:test -x spotlessCheck -x :reactor-core:jcstress -DuseSnapshotMicrometerVersion=true --no-daemon
-    name: Test on ${{ matrix.branch }} - ${{ matrix.test-type.type }} tests
+          arguments: check -x :reactor-core:test -x :reactor-core:java21Test -x :reactor-core:java9Test -x spotlessCheck -Pjcstress.mode=sanity --no-daemon
+    name: ${{ matrix.test-type.type }} tests
+    needs: preliminary
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
       with:
-        ref: ${{ github.event.inputs.ref }}
         repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
     - name: Download Java 9
-      if: contains('main 3.6.x', matrix.branch)
+      if: contains('main 3.6.x', github.base_ref)
       run: ${GITHUB_WORKSPACE}/.github/setup.sh
       shell: bash
     - name: Setup Java 9
-      if: contains('main 3.6.x', matrix.branch)
+      if: contains('main 3.6.x', github.base_ref)
       uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
       with:
         distribution: jdkfile
         java-version: 9.0.4
         jdkFile: /opt/openjdk/java9/OpenJDK9U-jdk_x64_linux_hotspot_9.0.4_11.tar.gz
     - name: Setup Java 21
-      if: contains('main 3.6.x', matrix.branch)
+      if: contains('main 3.6.x', github.base_ref)
       uses: actions/setup-java@99b8673ff64fbf99d8d325f52d9a5bdedb8483e9
       with:
         distribution: temurin
@@ -101,7 +166,7 @@ jobs:
 
                 echo "Exiting job after custom command run"
                 exit 1
-    - name: Run Gradle Tests (ces) (ces)
-      uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70
+    - uses: gradle/actions/setup-gradle@d9c87d481d55275bb5441eef3fe0e46805f9ef70
+      name: Run Gradle Tests (ces) (ces)
       with:
         arguments: ${{ matrix.test-type.arguments }}
