@@ -15,32 +15,165 @@ on:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
 jobs:
-  publish-to-OSSRH:
-    name: Publish to OSSRH
+  build:
+    name: build
+    services:
+      redis:
+        image: redis:7.2
+        ports:
+        - 6379:6379
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=3
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java:
+        - 8
+        - 17
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Use Python 3.x
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.12
+    - name: Set up Java JDK
+      uses: actions/setup-java@v3.12.0
+      with:
+        distribution: zulu
+        java-version: ${{ matrix.java }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Print maven version
+      run: ./mvnw -version
+    - name: Test, Check style, Check PMD, Check license with Maven and Java8 (ces)
+      if: matrix.java == '8'
+      run: |
+        ./mvnw -T 4C clean test \
+               -Dcheckstyle.skip=false -Dpmd.skip=false -Dlicense.skip=false -DredisCaseEnabled=true \
+               -e -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn;
+    - name: Test with Maven and Java${{ matrix.java }} (ces)
+      if: matrix.java != '8'
+      run: |
+        ./mvnw -T 4C clean test \
+               -e -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn;
+    - name: Codecov
+      if: matrix.java == '8'
+      uses: codecov/codecov-action@v4.0.1
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        version: v0.6.0
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  build_arm64-binary:
+    runs-on: ubuntu-latest
+    if: true
     strategy:
       fail-fast: false
     steps:
     - name: Checkout
-      uses: actions/checkout@v2.4.0
+      uses: actions/checkout@v3
       with:
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - name: Setup Java JDK
-      uses: actions/setup-java@v3.12.0
-      with:
-        distribution: zulu
-        java-version: 8
-        server-id: oss_seata
-        server-username: OSSRH_USERNAME
-        server-password: OSSRH_PASSWORD
-        gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-        gpg-passphrase: GPG_PASSPHRASE
-    - name: Print maven version
-      run: ./mvnw -version
-    - name: Publish to OSSRH
-      env:
-        OSSRH_USERNAME: ${{ secrets.OSSRH_USER }}
-        OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
-        GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-      run: ./mvnw -T 4C clean deploy -Prelease,release-by-github-actions -DskipTests -e -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn
+    - name: Set up QEMU
+      id: qemu
+      uses: docker/setup-qemu-action@v3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build with Maven on 'arm64v8/ubuntu:20.04' OS (Skip tests) (ces) (ces)
+      run: |
+        docker run --rm -v ${{ github.workspace }}:/ws:rw --workdir=/ws \
+          arm64v8/ubuntu:20.04 \
+          bash -exc 'apt-get update -y && \
+                     apt-get install maven -y && \
+                     apt-get install -y python3 python3-pip python3-distutils && \
+                     apt-get install -y build-essential && \
+                     mvn -version && \
+                     mvn clean install \
+                         -Prelease-seata \
+                         -DskipTests \
+                         -e -B -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn'
