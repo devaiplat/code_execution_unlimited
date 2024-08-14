@@ -15,29 +15,87 @@ on:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
 permissions:
-  actions: read
   contents: read
 jobs:
-  Fuzzing:
+  build:
+    permissions:
+      security-events: write
     runs-on: ubuntu-latest
+    env:
+      MAVEN_ARGS: -e -B -DtrimStackTrace=false
     steps:
-    - name: Build Fuzzers
-      id: build
-      uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@01544e953848869e7e359156d2b1a877deb98286
+    - name: Checkout
+      uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
       with:
-        oss-fuzz-project-name: joda-time
-        dry-run: false
-        language: jvm
-    - name: Run Fuzzers
-      uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@01544e953848869e7e359156d2b1a877deb98286
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up JDK
+      uses: actions/setup-java@3f07048e3d294f56e9b90ac5ea2c6f74e9ad0f98
       with:
-        oss-fuzz-project-name: joda-time
-        fuzz-seconds: 300
-        dry-run: false
-        language: jvm
-    - name: Upload Crash
-      uses: actions/upload-artifact@v3
-      if: failure() && steps.build.outcome == 'success'
+        java-version: 8
+        distribution: temurin
+        cache: maven
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Maven version
+      run: |
+        mvn --version
+
+        mkdir -p target
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@8aff97f12c99086bdb92ff62ae06dbbcdf07941b
       with:
-        name: artifacts
-        path: ./out/artifacts
+        languages: java
+    - name: Maven build
+      run: |
+        mvn install site
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@8aff97f12c99086bdb92ff62ae06dbbcdf07941b
+    - name: Website
+      if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/website') || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        GITHUB_TOKEN: ${{ secrets.PERSONAL_TOKEN_GH }}
+      run: |
+        chmod +x ./.github/website.sh
+
+        .github/website.sh
