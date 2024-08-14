@@ -1,0 +1,42 @@
+name: nodejs/node
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  NODE_VERSION: lts/*
+permissions:
+  contents: read
+jobs:
+  build-lto:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        persist-credentials: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Use Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    - name: Environment Information
+      run: npx envinfo
+    - name: Build lto
+      run: |
+        sudo apt-get update && sudo apt-get install ninja-build -y
+
+        ./configure --enable-lto --ninja
+
+        ninja -C out/Release
