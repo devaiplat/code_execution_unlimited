@@ -15,30 +15,109 @@ on:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
 jobs:
-  Localize:
-    runs-on: ubuntu-latest
-    environment: localization
-    permissions:
-      actions: read
-      contents: read
-      deployments: read
-      packages: read
-      pull-requests: write
+  validation:
+    runs-on: macos-14
+    strategy:
+      fail-fast: true
     steps:
     - uses: actions/checkout@v3
       with:
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - shell: bash
-      name: Localize
-      env:
-        TDBUILD_TEAM_ID: ${{ secrets.TDBUILD_TEAM_ID }}
-        TDBUILD_AAD_APPLICATION_CLIENT_ID: ${{ secrets.TDBUILD_AAD_APPLICATION_CLIENT_ID }}
-        TDBUILD_AAD_APPLICATION_CLIENT_SECRET: ${{ secrets.TDBUILD_AAD_APPLICATION_CLIENT_SECRET }}
-      run: scripts/localize.sh
-    - name: Create Pull Request
-      run: scripts/create_localization_pr.sh
-      env:
-        GITHUB_TOKEN: ${{ secrets.MSF_TOKEN }}
-        EMAIL: ${{ secrets.EMAIL }}
-        NAME: ${{ vars.NAME }}
+    - name: Switch to current version of Xcode
+      run: scripts/xcode_select_current_version.sh
+    - name: pod lib lint
+      run: scripts/podliblint.sh
+    - name: validation
+      run: scripts/validation.sh
+  xcodebuild:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        build_command:
+        - macos_build FluentUITestApp-macOS Release build
+        - macos_build FluentUITestApp-macOS Debug build -resultBundlePath TestResultsMac test -destination "platform=macOS,arch=x86_64"
+        - ios_simulator_build Demo.Development Debug build test -resultBundlePath TestResultsiOS -destination "platform=iOS Simulator,name=iPhone 14 Pro"
+        - ios_device_build Demo.Development Release build
+        - visionos_simulator_build Demo.Development Debug build
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Switch to current version of Xcode
+      run: scripts/xcode_select_current_version.sh
+    - name: Install xcbeautify
+      run: brew install xcbeautify
+    - name: scripts/xcodebuild_wrapper.sh ${{ matrix.build_command }} | xcbeautify
+      run: scripts/xcodebuild_wrapper.sh ${{ matrix.build_command }} | xcbeautify
+      continue-on-error: true
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Zip if TestResultsMac.xcresult bundle exists (ces) (ces)
+      run: |
+        if [ -d "TestResultsMac.xcresult" ]; then
+          zip -r TestResultsMac.zip TestResultsMac.xcresult
+        else
+          echo "TestResultsMac.xcresult not found."
+        fi
+    - name: Upload TestResultsMac.zip (ces)
+      uses: actions/upload-artifact@v3
+      with:
+        name: xctest-resultsMac
+        path: TestResultsMac.zip
+        retention-days: 3
+    - name: Zip if TestResultsiOS.xcresult bundle exists (ces)
+      run: |
+        if [ -d "TestResultsiOS.xcresult" ]; then
+          zip -r TestResultsiOS.zip TestResultsiOS.xcresult
+        else
+          echo "TestResultsiOS.xcresult not found."
+        fi
+    - name: Upload TestResultsiOS.zip (ces)
+      uses: actions/upload-artifact@v3
+      with:
+        name: xctest-resultsiOS
+        path: TestResultsiOS.zip
+        retention-days: 3
