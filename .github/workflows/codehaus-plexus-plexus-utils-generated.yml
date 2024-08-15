@@ -1,0 +1,25 @@
+name: codehaus-plexus/plexus-utils
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    name: Build it
+    uses: codehaus-plexus/.github/.github/workflows/maven.yml@master
+  deploy:
+    name: Deploy
+    needs: build
+    uses: codehaus-plexus/.github/.github/workflows/maven-deploy.yml@master
+    secrets: inherit
