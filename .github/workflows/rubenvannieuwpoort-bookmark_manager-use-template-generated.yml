@@ -1,47 +1,63 @@
-name: rubenvannieuwpoort/bookmark_manager
+# This workflow will do a clean installation of node dependencies, cache/restore them, build the source code and run tests across different versions of node
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs
+
+name: ts-js - rubenvannieuwpoort/bookmark_manager
+
 on:
-  workflow_dispatch:
+   workflow_dispatch:
     inputs:
       repoName:
         description: Name of the repo
         required: false
       patch:
-        description: Base64 encoded patch content
+        description: 'Base64 encoded patch content'
         required: false
+        default: ''
       command:
-        description: Command to run
+        description: 'Base64 encoded command content'
         required: false
+        default: ''
       ref:
-        description: The repo branch, tag, or commit SHA to checkout
+        description: 'The branch, tag, or commit SHA to checkout'
         required: false
+
 jobs:
   build:
+
     runs-on: ubuntu-latest
+
     strategy:
       fail-fast: false
       matrix:
         os:
         - ubuntu-latest
-        - windows-latest
+        #- windows-latest
         node-version:
-        - 18
-        - 16
-        - 14
+        #- 22
+        #- 20
+        - 18 # pnpm requires at least Node.js v18.12
+        #- 16
+        #- 14
+        # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
+
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
       with:
-        repository: ${{ github.event.inputs.repoName }}
-        ref: ${{ github.event.inputs.ref }}
+           repository: ${{ github.event.inputs.repoName }}
+           ref: ${{ github.event.inputs.ref }}
+    
     - name: Set up Node.js ${{ matrix.node-version }}
       uses: actions/setup-node@v3
       with:
         node-version: ${{ matrix.node-version }}
         check-latest: true
+      
     - name: Search for package.json
       id: search-package-json
+      shell: bash
       run: |
         # Check if package.json exists in the root folder
-
         if [ -f "./package.json" ]; then
           PACKAGE_JSON_PATH="./package.json"
         else
@@ -49,18 +65,16 @@ jobs:
           PACKAGE_JSON_PATH=$(find . -name 'package.json' | head -n 1)
         fi
 
-
         if [ -z "$PACKAGE_JSON_PATH" ]; then
           echo "No package.json found"
           exit 1
         fi
-
         echo "package_json_path=$(dirname "$PACKAGE_JSON_PATH")" >> $GITHUB_ENV
-      shell: bash
+
     - name: Enable Corepack and Install correct package manager version
+      shell: bash
       run: |
         PACKAGE_MANAGER=$(node -e "const pkg = require('${{ env.package_json_path }}/package.json'); console.log(pkg.packageManager);")
-
         if [[ $PACKAGE_MANAGER == yarn@* ]]; then
           corepack enable
           PACKAGE_MANAGER_VERSION=${PACKAGE_MANAGER#yarn@}
@@ -70,7 +84,10 @@ jobs:
           PACKAGE_MANAGER_VERSION=${PACKAGE_MANAGER#pnpm@}
           corepack prepare pnpm@$PACKAGE_MANAGER_VERSION --activate
         fi
+
     - name: Check and Sync yarn.lock, package-lock.json or pnpm-lock.yaml
+      shell: bash
+      working-directory: ${{ env.package_json_path }}
       run: |
         if [ -f yarn.lock ]; then
           echo "yarn.lock found. Checking if in sync with package.json..."
@@ -112,8 +129,10 @@ jobs:
           echo "Neither yarn.lock, pnpm-lock.yaml nor package-lock.json found. Please ensure one of them is present in the repository."
           exit 1
         fi
-      working-directory: ${{ env.package_json_path }}
+
     - name: Install dependencies with npm or pnpm
+      shell: bash
+      working-directory: ${{ env.package_json_path }}
       run: |
         if [ -f yarn.lock ]; then
           yarn install --frozen-lockfile || yarn install || true
@@ -127,50 +146,27 @@ jobs:
           echo "Proceeding with dependency installation..."
           npm ci
         fi
+
+    - name: Apply patch if provided, decode base64
+      shell: bash
       working-directory: ${{ env.package_json_path }}
-    - name: Apply patch
-      shell: bash
       run: |
-
-                if [ -n "${{ github.event.inputs.patch }}" ]; then
-                   echo "Patch input provided. Applying patch..."
-                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
-                   echo "Decoded patch content:"
-                   cat patch.diff 
-                   echo "Apply the patch:"
-                   git apply --verbose patch.diff
-                 else
-                   echo "No patch input provided. Skipping patch application."
-                 fi
-                echo "Print git diff on local repo"
-                git diff
-    - name: Run custom command
+          if [ -n "${{ github.event.inputs.patch }}" ]; then
+            echo "Patch input provided. Applying patch..."
+            echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+            echo "Decoded patch content:"
+            cat patch.diff 
+            echo "Apply the patch:"
+            git apply --verbose patch.diff
+          else
+            echo "No patch input provided. Skipping patch application."
+          fi
+          echo "Print git diff on local repo"
+          git diff
+      
+    - name: Build (ces)
+      working-directory: ${{ env.package_json_path }}
       shell: bash
-      run: |
-         
-                if [ -n "${{ github.event.inputs.command }}" ]; then
-                   echo "Start running custom command"
-                   echo "${{ github.event.inputs.command }}"
-                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
-                   echo "Decoded custom command is:"
-                   echo $output
-                   echo "!!==================================!!"
-                   echo "Custom command output:"
-                   echo "!!==================================!!"
-                   eval $output
-                   echo "!!==================================!!"
-                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
-                   echo "Finished running custom command!"
-                   echo "!!== RUN COMPLETED ==!!"
-                fi
-    - name: Exit if custom command was run
-      if: env.RAN_CUSTOM_COMMAND == 'true'
-      shell: bash
-      run: |
-
-                echo "Exiting job after custom command run"
-                exit 1
-    - name: Build
       run: |
         if [ -f "package.json" ] && [ "$(node -e "const pkg = require('./package.json'); console.log(pkg.scripts && pkg.scripts.build ? 'true' : 'false');")" = "true" ]; then
           if [ -f yarn.lock ]; then
@@ -186,8 +182,31 @@ jobs:
         else
           echo "No build script found in package.json"
         fi
+
+    - name: Run custom command
       working-directory: ${{ env.package_json_path }}
-    - name: Test (ces)
+      shell: bash
+      run: |
+         if [ -n "${{ github.event.inputs.command }}" ]; then
+           echo "Start running custom command"         
+           echo "${{ github.event.inputs.command }}"
+           output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+           echo "Decoded custom command is:"
+           echo $output
+           echo "!!==================================!!"
+           echo "Command output:"
+           echo "!!==================================!!"
+           eval $output
+           echo "!!==================================!!"
+           echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+           echo "Finished running custom command!"
+           echo "!!== RUN COMPLETED ==!!"
+         fi
+      
+    - name: Run Test (ces)
+      working-directory: ${{ env.package_json_path }}
+      shell: bash
+      if: env.RAN_CUSTOM_COMMAND != 'true'
       run: |
         if [ -f "package.json" ] && [ "$(node -e "const pkg = require('./package.json'); console.log(pkg.scripts && pkg.scripts.test ? true : false);")" = "true" ]; then
           echo "Test script found in package.json."
@@ -205,5 +224,4 @@ jobs:
           echo "No test script found in package.json."
           exit 0
         fi
-      shell: bash
-      working-directory: ${{ env.package_json_path }}
+        echo "!!== RUN COMPLETED ==!!"
