@@ -15,23 +15,31 @@ on:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
 jobs:
-  format:
-    name: Check
-    runs-on: ubuntu-latest
+  build_and_test:
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+    name: Node on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
     - name: Checkout Code
       uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
       with:
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
+    - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d
+      with:
+        version: 9
     - name: Use Node
       uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8
       with:
-        node-version-file: ./package.json
-        cache: npm
+        node-version: 20.10.0
+        cache: pnpm
     - name: Install Dependencies
-      run: npm ci
-      shell: bash
+      run: pnpm install
     - name: Apply patch
       shell: bash
       run: |
@@ -74,6 +82,10 @@ jobs:
 
                 echo "Exiting job after custom command run"
                 exit 1
-    - name: Prettier Check
-      run: npm run prettier.dry-run
-      shell: bash
+    - name: Build
+      run: pnpm run build
+    - name: Test (ces)
+      run: pnpm test
+  format:
+    name: Format
+    uses: ./.github/workflows/format.yml
