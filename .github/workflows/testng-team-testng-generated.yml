@@ -14,17 +14,136 @@ on:
       ref:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
-permissions:
-  contents: read
-  issues: write
+concurrency:
+  group: ${{ (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release' ) && format('ci-main-{0}', github.sha) || format('ci-main-{0}', github.ref) }}
+  cancel-in-progress: true
 jobs:
-  comment:
-    if: true
+  matrix_prep:
+    name: Matrix Preparation
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    env:
+      MATRIX_JOBS: 7
     steps:
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 1
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - name: Label Commenter
-      uses: peaceiris/actions-label-commenter@v1
+    - id: set-matrix
+      run: |
+        node .github/workflows/matrix.js
+  build:
+    needs: matrix_prep
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix: ${{fromJson(needs.matrix_prep.outputs.matrix)}}
+    name: ${{ matrix.name }}
+    env:
+      TZ: ${{ matrix.tz }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 10
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Java ${{ matrix.java_version }}, oracle
+      if: ${{ matrix.oracle_java_website != '' }}
+      uses: oracle-actions/setup-java@83e2004a40aaa491fbc6b4697353b9a75b095efb
+      with:
+        website: ${{ matrix.oracle_java_website }}
+        release: ${{ matrix.java_version }}
+    - name: Set up Java 17 and ${{ matrix.non_ea_java_version }}, ${{ matrix.java_distribution }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: >
+          ${{ matrix.non_ea_java_version }}
+
+          17
+        distribution: ${{ matrix.java_distribution }}
+        architecture: x64
+    - name: Steps to reproduce
+      uses: actions/github-script@v7
+      with:
+        script: >
+          console.log('The following command might help reproducing CI results, use Java ${{ matrix.java_version }}')
+
+          console.log('TZ="${{ matrix.tz }}" ./gradlew build ${{ matrix.extraGradleArgs }} -Ptestng.test.extra.jvmargs="${{ matrix.testExtraJvmArgs }}" -PtestDisableCaching="${{ matrix.testDisableCaching }}"')
+    - name: Generate unique build id
+      id: build_id
+      run: echo "unique_id=$(date +%s)" >> $GITHUB_OUTPUT
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test (ces) (ces)
+      id: run_test_cases
+      uses: burrunan/gradle-cache-action@v1
+      with:
+        job-id: jdk${{ matrix.jdk.version }}
+        arguments: >
+          --no-parallel --no-daemon --scan
+
+          build
+
+          ${{ matrix.extraGradleArgs }}
+        properties: >
+          testng.test.extra.jvmargs=${{ matrix.testExtraJvmArgs }}
+
+          testDisableCaching=${{ matrix.testDisableCaching }}
+
+          jdkBuildVersion=17
+
+          jdkTestVersion=${{ matrix.java_version }}
+
+          jdkTestVendor=${{ matrix.java_vendor }}
+
+          # We provision JDKs with GitHub Actions for caching purposes, so Gradle should rather fail in case JDK is not found
+
+          org.gradle.java.installations.auto-download=false
+    - name: Upload build reports
+      if: ${{ failure() && steps.run_test_cases.outcome == 'failure' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-reports-${{ matrix.jdk.group }}-${{ matrix.jdk.version }}-${{ steps.build_id.outputs.unique_id }}
+        path: testng-core/build/reports/tests/test/**
