@@ -19,9 +19,151 @@ permissions:
 env:
   GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false -Dkotlin.incremental=false
 jobs:
-  test_docs:
+  publish:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Upload Artifacts
+      run: ./gradlew clean publish --stacktrace
+      env:
+        ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_NEXUS_USERNAME }}
+        ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_NEXUS_PASSWORD }}
+        ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.ARTIFACT_SIGNING_PRIVATE_KEY }}
+  validation:
+    name: Validation
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: gradle/actions/wrapper-validation@v3
+    - name: Validate Renovate
+      uses: rinchsan/renovate-config-validator@v0.2.0
+      with:
+        pattern: .github/renovate.json
+  checkjdk11:
     permissions:
       checks: write
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew check -PandroidBuild=true -PgraalBuild=true -x test -x test
+  testopenjdk11:
+    permissions:
+      checks: write
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dtest.java.version=11
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Publish Test Report (ces) (ces)
+      if: github.repository == 'square/okhttp' && github.ref == 'refs/heads/master'
+      uses: mikepenz/action-junit-report@v4
+      with:
+        report_paths: '**/build/test-results/*/TEST-*.xml'
+        check_name: OpenJDK 11 Test Report
+    - name: Publish Test Results (ces)
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      if: github.repository == 'square/okhttp' && github.ref == 'refs/heads/master'
+      with:
+        files: >
+          **/build/test-results/*/TEST-*.xml
+  testzulu11:
     runs-on: ubuntu-latest
     if: true
     steps:
@@ -35,14 +177,561 @@ jobs:
       uses: actions/setup-java@v4
       with:
         distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
         java-version: 17
-    - uses: actions/setup-python@v5
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dtest.java.version=11
+  testopenjdk8:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
       with:
-        python-version: 3.x
-    - run: pip install mkdocs-material mkdocs-redirects
-    - name: Generate Docs
-      run: ./test_docs.sh
-    - uses: actions/upload-artifact@v4
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
       with:
-        name: docs
-        path: site/
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dtest.java.version=8
+  testopenjdk8alpn:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Old JDK 8
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 8.0.242
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dtest.java.version=8 -Dokhttp.platform=jdk8alpn -Dalpn.boot.version=8.1.13.v20181017 -Dorg.gradle.java.installations.paths=/opt/hostedtoolcache/Java_Adopt_jdk/8.0.242-8.1/x64
+  testopenjsse:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dtest.java.version=8 -Dokhttp.platform=openjsse
+  testconscrypt:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dokhttp.platform=conscrypt
+  testbouncycastle:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dokhttp.platform=bouncycastle
+  testcorretto:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dokhttp.platform=corretto
+  testopenjdk17:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dtest.java.version=17
+  testopenjdk21:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 21
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dtest.java.version=21
+  testwindows:
+    runs-on: windows-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test (ces) (ces)
+      run: ./gradlew test
+  testgraal:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Build okcurl
+      run: ./gradlew okcurl:nativeImage
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Build ConsoleLauncher
+      run: ./gradlew -PgraalBuild=true native-image-tests:nativeImage
+    - name: Run Checks
+      run: ./native-image-tests/build/graal/ConsoleLauncher
+  testandroid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: true
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level:
+        - 21
+        - 29
+        - 34
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Enable KVM group perms
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+
+        sudo udevadm control --reload-rules
+
+        sudo udevadm trigger --name-match=kvm
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Gradle cache
+      run: ./gradlew -PandroidBuild=true :okhttp-android:test
+    - name: AVD cache
+      uses: actions/cache@v4
+      id: avd-cache
+      with:
+        path: >
+          ~/.android/avd/*
+
+          ~/.android/adb*
+        key: avd-${{ matrix.api-level }}
+    - name: Create AVD and generate snapshot for caching
+      if: steps.avd-cache.outputs.cache-hit != 'true'
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        arch: ${{ matrix.api-level == '34' && 'x86_64' || 'x86' }}
+        force-avd-creation: false
+        emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+        disable-animations: false
+        script: echo "Generated AVD snapshot for caching."
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Tests (ces) (ces)
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        arch: ${{ matrix.api-level == '34' && 'x86_64' || 'x86' }}
+        script: ./gradlew -PandroidBuild=true :okhttp-android:connectedCheck :android-test:connectedCheck
+      env:
+        API_LEVEL: ${{ matrix.api-level }}
+    - name: Run Release Tests (ces)
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        arch: ${{ matrix.api-level == '34' && 'x86_64' || 'x86' }}
+        script: ./gradlew -PandroidBuild=true :android-test-app:connectedCheck
+      env:
+        API_LEVEL: ${{ matrix.api-level }}
+  testloom:
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 21
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Run Checks
+      run: ./gradlew test -Dokhttp.platform=loom -Dtest.java.version=21 -PcontainerTests=true
+  testandroidregression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: true
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level:
+        - 29
+        - 34
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 11
+    - name: Configure JDK
+      uses: actions/setup-java@v4
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Enable KVM group perms
+      run: |
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+
+        sudo udevadm control --reload-rules
+
+        sudo udevadm trigger --name-match=kvm
+    - name: Gradle cache
+      uses: gradle/actions/setup-gradle@v3
+    - name: AVD cache
+      uses: actions/cache@v4
+      id: avd-cache
+      with:
+        path: >
+          ~/.android/avd/*
+
+          ~/.android/adb*
+        key: avd-${{ matrix.api-level }}
+    - name: Create AVD and generate snapshot for caching
+      if: steps.avd-cache.outputs.cache-hit != 'true'
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        force-avd-creation: false
+        arch: ${{ matrix.api-level == '34' && 'x86_64' || 'x86' }}
+        emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+        disable-animations: false
+        script: echo "Generated AVD snapshot for caching."
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Tests (ces) (ces)
+      uses: reactivecircus/android-emulator-runner@v2
+      with:
+        api-level: ${{ matrix.api-level }}
+        arch: ${{ matrix.api-level == '34' && 'x86_64' || 'x86' }}
+        script: ./gradlew -PandroidBuild=true :regression-test:connectedCheck
+      env:
+        API_LEVEL: ${{ matrix.api-level }}
