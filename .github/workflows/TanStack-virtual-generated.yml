@@ -20,70 +20,12 @@ concurrency:
 env:
   NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
 permissions:
-  contents: read
+  contents: write
+  id-token: write
 jobs:
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4.1.7
-      with:
-        fetch-depth: 0
-        repository: ${{ github.event.inputs.repoName }}
-        ref: ${{ github.event.inputs.ref }}
-    - name: Setup Tools
-      uses: tanstack/config/.github/setup@main
-    - name: Get base and head commits for `nx affected`
-      uses: nrwl/nx-set-shas@v4.0.6
-      with:
-        main-branch-name: main
-    - name: Apply patch
-      shell: bash
-      run: |
-
-                if [ -n "${{ github.event.inputs.patch }}" ]; then
-                   echo "Patch input provided. Applying patch..."
-                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
-                   echo "Decoded patch content:"
-                   cat patch.diff 
-                   echo "Apply the patch:"
-                   git apply --verbose patch.diff
-                 else
-                   echo "No patch input provided. Skipping patch application."
-                 fi
-                echo "Print git diff on local repo"
-                git diff
-    - name: Run custom command
-      shell: bash
-      run: |
-         
-                if [ -n "${{ github.event.inputs.command }}" ]; then
-                   echo "Start running custom command"
-                   echo "${{ github.event.inputs.command }}"
-                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
-                   echo "Decoded custom command is:"
-                   echo $output
-                   echo "!!==================================!!"
-                   echo "Custom command output:"
-                   echo "!!==================================!!"
-                   eval $output
-                   echo "!!==================================!!"
-                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
-                   echo "Finished running custom command!"
-                   echo "!!== RUN COMPLETED ==!!"
-                fi
-    - name: Exit if custom command was run
-      if: env.RAN_CUSTOM_COMMAND == 'true'
-      shell: bash
-      run: |
-
-                echo "Exiting job after custom command run"
-                exit 1
-    - name: Run Checks
-      run: pnpm run test:pr
-  preview:
-    name: Preview
+  test-and-publish:
+    name: Test & Publish
+    if: true
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -136,7 +78,18 @@ jobs:
 
                 echo "Exiting job after custom command run"
                 exit 1
-    - name: Build Packages
-      run: pnpm run build:all
-    - name: Publish Previews
-      run: pnpx pkg-pr-new publish --pnpm --compact './packages/*' --template './examples/*/*'
+    - name: Run Tests (ces) (ces)
+      run: pnpm run test:ci
+    - name: Publish
+      run: |
+        git config --global user.name 'Tanner Linsley'
+
+        git config --global user.email 'tannerlinsley@users.noreply.github.com'
+
+        npm config set '//registry.npmjs.org/:_authToken' "${NPM_TOKEN}"
+
+        pnpm run cipublish
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        TAG: ${{ inputs.tag }}
