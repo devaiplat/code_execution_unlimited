@@ -16,17 +16,22 @@ on:
         required: false
 env:
   CI: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  scheduled-e2e-node:
-    name: Scheduled E2E Integration tests
-    runs-on: ubuntu-latest
-    environment:
-      name: ${{ matrix.environment-name }}
+  lint:
+    uses: inrupt/typescript-sdk-tools/.github/workflows/reusable-lint.yml@v3
+  unit-tests:
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        environment-name:
-        - Inrupt Dev-Next
-        - NSS
+        os:
+        - ubuntu-latest
+        - windows-latest
+        node-version:
+        - 20.x
+        - 18.x
     steps:
     - uses: actions/checkout@v4
       with:
@@ -34,7 +39,7 @@ jobs:
         ref: ${{ github.event.inputs.ref }}
     - uses: actions/setup-node@v4
       with:
-        node-version-file: .nvmrc
+        node-version: ${{ matrix.node-version }}
         cache: npm
     - run: npm ci --ignore-scripts
     - name: Apply patch
@@ -79,19 +84,30 @@ jobs:
 
                 echo "Exiting job after custom command run"
                 exit 1
-    - run: npm run test:e2e:node
+    - run: npm run test:unit:browser
+    - run: npm run test:unit:node
+    - run: npm run test:webpack
+    - uses: actions/upload-artifact@v4
+      if: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x' }}
+      with:
+        name: code-coverage-${{matrix.os}}-${{matrix.node-version}}
+        path: coverage/
+  sonar-scan:
+    if: true
+    needs:
+    - unit-tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: code-coverage-ubuntu-latest-20.x
+        path: coverage/
+    - uses: SonarSource/sonarcloud-github-action@v2
       env:
-        E2E_TEST_POD: ${{ secrets.E2E_TEST_POD }}
-        E2E_TEST_IDP: ${{ secrets.E2E_TEST_IDP }}
-        E2E_TEST_CLIENT_ID: ${{ secrets.E2E_TEST_CLIENT_ID }}
-        E2E_TEST_CLIENT_SECRET: ${{ secrets.E2E_TEST_CLIENT_SECRET }}
-        E2E_TEST_ENVIRONMENT: ${{ matrix.environment-name }}
-        E2E_TEST_FEATURE_ACP: ${{ secrets.E2E_TEST_FEATURE_ACP }}
-        E2E_TEST_FEATURE_ACP_V3: ${{ secrets.E2E_TEST_FEATURE_ACP_V3 }}
-        E2E_TEST_FEATURE_WAC: ${{ secrets.E2E_TEST_FEATURE_WAC }}
-    - name: Send a notification that the test has failed (ces)
-      if: failure()
-      run: "curl -X POST -H Content-type: 'application/json' --data \"{\\\"text\\\":\\\"Automated tests against ${{ matrix.environment-name }} failed. View <https://github.com/inrupt/solid-client-js/actions/runs/$RUN_ID|the execution log> for more details.\\\"}\" $WEBHOOK_E2E_FAILURE"
-      env:
-        WEBHOOK_E2E_FAILURE: ${{ secrets.WEBHOOK_E2E_FAILURE }}
-        RUN_ID: ${{ github.run_id }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
