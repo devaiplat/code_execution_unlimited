@@ -14,34 +14,92 @@ on:
       ref:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
-permissions: read-all
+permissions:
+  contents: read
 jobs:
-  analysis:
-    name: Scorecard analysis
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        java:
+        - 11
+        - 17
+        - 21
     steps:
-    - name: Checkout code
-      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+    - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
       with:
-        persist-credentials: false
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - name: Run analysis
-      uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46
+    - name: Set up JDK ${{ matrix.Java }}
+      uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
       with:
-        results_file: results.sarif
-        results_format: sarif
-        publish_results: true
-    - name: Upload artifact
-      uses: actions/upload-artifact@89ef406dd8d7e03cfd12d9e0a4a378f454709029
+        java-version: ${{ matrix.Java }}
+        distribution: temurin
+        cache: maven
+    - uses: reviewdog/action-setup@3f401fe1d58fe77e10d665ab713057375e39b887
+      name: Set up reviewdog
       with:
-        name: SARIF file
-        path: results.sarif
-        retention-days: 5
-    - name: Upload to code-scanning
-      uses: github/codeql-action/upload-sarif@1b1aada464948af03b950897e5eb522f92603cc2
-      with:
-        sarif_file: results.sarif
+        reviewdog_version: latest
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build with Maven
+      run: mvn --batch-mode --errors --fail-at-end --show-version -Dgpg.skip -Djava.awt.headless=true compile test-compile
+    - name: Run CodeStyleTest (ces)
+      if: ${{ matrix.Java == 21 }}
+      run: EXPORT_FAILURES=1 mvn --batch-mode --fail-never --show-version -Dgpg.skip -Djava.awt.headless=true -Dtest=org.htmlunit.CodeStyleTest test
+    - name: Upload check results
+      if: ${{ matrix.Java == 21 }}
+      env:
+        WORKDIR: ./
+        REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        [ -s target/CodeStyle.txt ] && cat target/CodeStyle.txt | { reviewdog -efm="%f, line %l: %m" -name="CodeStyleTest::codeStyle" -reporter=github-pr-check -filter-mode=diff_context -fail-on-error || touch reporterror; }
+
+        [ -s target/Tests.txt ] && cat target/Tests.txt | { reviewdog -efm="%f, line %l: %m" -name="CodeStyleTest::tests" -reporter=github-pr-check -filter-mode=diff_context -fail-on-error || touch reporterror; }
+
+        [ -s target/XMLStyle.txt ] && cat target/XMLStyle.txt | { reviewdog -efm="%f, line %l: %m" -name="CodeStyleTest::xmlStyle" -reporter=github-pr-check -filter-mode=diff_context -fail-on-error || touch reporterror; }
+
+        [ -f reporterror ] && exit 1
+
+        exit 0
