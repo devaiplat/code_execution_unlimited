@@ -15,20 +15,81 @@ on:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os:
+        - ubuntu-latest
+        node:
+        - lts/*
+        experimental:
+        - false
+    name: "\U0001F477 CI @QwikDev/astro on Node-${{ matrix.node }} under ${{ matrix.os }}"
+    timeout-minutes: 60
     steps:
-    - name: Checkout code
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: "\U0001F69A Get latest code (ces) (ces)"
       uses: actions/checkout@v4
       with:
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - name: Setup pnpm
+    - name: "\U0001F433 Setup Node"
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node }}
+    - name: ⚡️ Setup pnpm
       uses: pnpm/action-setup@v4
       with:
         version: 9
-    - uses: actions/setup-node@v4
+    - name: ✅ Install dependencies, check code & run E2E tests (ces)
+      run: make test
+    - uses: actions/upload-artifact@v4
+      if: always()
       with:
-        node-version: 20
-        cache: pnpm
-    - run: make pr-release
+        name: playwright-report
+        path: playwright-report/
+        retention-days: 30
