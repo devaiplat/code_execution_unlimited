@@ -14,41 +14,85 @@ on:
       ref:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
-permissions:
-  contents: read
-  pages: write
-  id-token: write
 env:
   NX_PARALLEL: 2
   NX_VERBOSE_LOGGING: true
-concurrency:
-  group: pages
-  cancel-in-progress: false
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  main:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
+    - name: Derive appropriate SHAs for base and head for `nx affected` commands
+      uses: nrwl/nx-set-shas@v4
     - uses: actions/setup-node@v4
       with:
         cache: yarn
         node-version: 20
     - run: yarn install --frozen-lockfile
-    - run: yarn nx run-many --target=build-storybook
-    - name: Setup Pages
-      uses: actions/configure-pages@v3
-    - name: Upload artifact
-      uses: actions/upload-pages-artifact@v1
-      with:
-        path: ./dist/storybook
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v2
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Check duplicates in yarn.lock
+      run: yarn run dedupe --list --fail
+    - run: yarn check-dependencies
+    - name: Install Playwright Browsers
+      run: npx playwright install --with-deps
+    - run: yarn nx affected --target=verify-integrity
+    - run: yarn nx affected --target=build
+    - run: yarn nx affected --target=build-storybook
+    - run: yarn nx affected --target=type-check
+    - run: yarn nx affected --target=lint
+    - run: yarn nx affected --target=test
+    - run: yarn nx affected --target=component-test --skipInstall
+    - run: yarn nx format:check --base origin/main
+    - name: Check for unstaged changes
+      run: |
+        git status --porcelain
+
+        git diff-index --quiet HEAD -- || exit 1
