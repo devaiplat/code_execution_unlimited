@@ -1,7 +1,4 @@
 name: clerk/javascript
-run-name: Deploy Preview by ${{ github.actor }}
-env:
-  COMMENT_HEADER: javascript-preview
 on:
   workflow_dispatch:
     inputs:
@@ -18,87 +15,37 @@ on:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.actor }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  preview:
-    if: true
-    runs-on: ${{ vars.RUNNER_NORMAL || 'ubuntu-latest' }}
+  formatting-linting:
+    name: Formatting, linting & changeset checks
+    runs-on: ${{ vars.RUNNER_LARGE || 'ubuntu-latest-l' }}
     timeout-minutes: ${{ vars.TIMEOUT_MINUTES_NORMAL && fromJSON(vars.TIMEOUT_MINUTES_NORMAL) || 10 }}
     env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_CLERK_PROD_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_JS_PREVIEW_PROJECT_ID }}
-    permissions:
-      contents: write
-      pull-requests: write
+      TURBO_SUMMARIZE: false
     steps:
-    - name: Limit action to Clerk members
-      uses: actions/github-script@v7
-      with:
-        result-encoding: string
-        retries: 3
-        retry-exempt-status-codes: 400,401
-        github-token: ${{ secrets.CLERK_COOKIE_PAT }}
-        script: >
-          const isMember = await github.rest.orgs.checkMembershipForUser({
-            org: 'clerk',
-            username: context.actor
-          });
-
-          if (!isMember) {
-            core.setFailed(`@${actor} is not a member of the Clerk organization`);
-          }
-    - name: Checkout repo
+    - name: Checkout Repo
       uses: actions/checkout@v4
       with:
-        ref: ${{ github.event.inputs.ref }}
+        fetch-depth: 0
+        show-progress: false
         repository: ${{ github.event.inputs.repoName }}
-    - name: Ensure the PR hasn't changed since initiating the !preview command.
-      uses: actions/github-script@v7
-      with:
-        result-encoding: string
-        retries: 3
-        retry-exempt-status-codes: 400,401
-        github-token: ${{ secrets.CLERK_COOKIE_PAT }}
-        script: >
-          const commentCreated = new Date(context.payload.comment.created_at);
-
-
-          const pr = await github.rest.pulls.get({
-            owner: 'clerk',
-            repo: 'javascript',
-            pull_number: context.issue.number,
-          });
-
-
-          const prLastUpdated = new Date(pr.updated_at);
-
-
-          if (prLastUpdated > commentCreated) {
-            core.setFailed("The PR has been updated since !preview was initiated. Please review the changes and re-run the !preview command.");
-          }
+        ref: ${{ github.event.inputs.ref }}
     - name: Setup
       id: config
       uses: ./.github/actions/init
       with:
         turbo-signature: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+        turbo-summarize: ${{ env.TURBO_SUMMARIZE }}
         turbo-team: ${{ vars.TURBO_TEAM }}
         turbo-token: ${{ secrets.TURBO_TOKEN }}
-        registry-url: https://registry.npmjs.org
-    - name: Build packages
-      run: npx turbo build $TURBO_ARGS
-    - name: Get date
-      run: |
-        echo "DATE=$(date -u +"%b %d, %Y %I:%M %p")" >> $GITHUB_ENV
-    - name: Install site in isolation
-      run: node scripts/install-site-in-isolation.mjs playground/nextjs
-    - name: Install Vercel CLI
-      run: npm install --global vercel@latest
-    - name: Pull Vercel environment information
-      run: |
-        cd $FULL_TMP_FOLDER
-
-        vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }}
+    - name: Require Changeset
+      if: ${{ !(github.event_name == 'merge_group') }}
+      run: if [[ "${{ github.event.pull_request.user.login }}" = "clerk-cookie" || "${{ github.event.pull_request.user.login }}" = "renovate[bot]" ]]; then echo 'Skipping' && exit 0; else npx changeset status --since=origin/main; fi
+    - name: Lint GitHub Actions Workflows
+      run: npx eslint .github
+      shell: bash
     - name: Apply patch
       shell: bash
       run: |
@@ -141,65 +88,279 @@ jobs:
 
                 echo "Exiting job after custom command run"
                 exit 1
-    - name: Copy clerk-js/dist into public/clerk-js of test site (ces) (ces)
-      run: |
-        cp -r $GITHUB_WORKSPACE/packages/clerk-js/dist $FULL_TMP_FOLDER/public/clerk-js
-    - name: Build with Vercel
-      run: |
-        cd $FULL_TMP_FOLDER
-
-        vercel build --yes
+    - name: Check Formatting
+      run: npm run format:check
+    - name: Build Packages
+      run: npx turbo build $TURBO_ARGS --only
+    - name: Check size using bundlewatch
+      run: npx turbo bundlewatch $TURBO_ARGS --only
       env:
-        NEXT_PUBLIC_CLERK_JS_URL: /clerk-js/clerk.browser.js
-    - name: Deploy to Vercel (prebuilt)
-      id: vercel-deploy
-      run: |
-        cd $FULL_TMP_FOLDER
-
-        vercel deploy --prebuilt --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }} --no-wait > deployment_url.txt
-
-        echo "url=$(cat deployment_url.txt)" >> $GITHUB_OUTPUT
-    - name: Create preview comment - Deploying
-      uses: marocchino/sticky-pull-request-comment@v2.8.0
+        BUNDLEWATCH_GITHUB_TOKEN: ${{ secrets.BUNDLEWATCH_GITHUB_TOKEN }}
+        CI_REPO_OWNER: ${{ vars.REPO_OWNER }}
+        CI_REPO_NAME: ${{ vars.REPO_NAME }}
+        CI_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        CI_BRANCH: ${{ github.ref	}}
+        CI_BRANCH_BASE: refs/heads/main
+    - name: Lint packages using publint
+      run: npx turbo lint:publint $TURBO_ARGS --only
+    - name: Lint types using attw
+      run: npx turbo lint:attw $TURBO_ARGS --filter=!@clerk/nextjs --filter=!@clerk/tanstack-start --filter=!@clerk/elements --filter=!@clerk/backend --filter=!@clerk/astro --only
+    - name: Lint types using attw [Errors Allowed]
+      run: npx turbo lint:attw $TURBO_ARGS --filter=@clerk/nextjs --filter=@clerk/tanstack-start --filter=@clerk/backend --filter=@clerk/elements --filter=@clerk/astro --continue --only
+      continue-on-error: true
+    - name: Run lint
+      run: npx turbo lint $TURBO_ARGS --only -- --quiet
+    - name: Upload Turbo Summary
+      uses: actions/upload-artifact@v3
+      if: ${{ env.TURBO_SUMMARIZE == 'true' }}
+      continue-on-error: true
       with:
-        GITHUB_TOKEN: ${{ secrets.CLERK_COOKIE_PAT }}
-        number: ${{ github.event.issue.number }}
-        header: ${{ env.COMMENT_HEADER}}
-        message: >
-          Hey @${{ github.event.comment.user.login }}, your preview is currently deploying and should be available shortly.
-
-
-          | Status | Preview | Updated (UTC) |
-
-          | :-- | :-- | :-- |
-
-          | :cook: _Deploying..._ | [Inspect](${{ steps.vercel-deploy.outputs.url }}) | ${{ env.DATE }} |
-    - name: Get date
-      run: |
-        echo "DATE=$(date -u +"%b %d, %Y %I:%M %p")" >> $GITHUB_ENV
-    - name: Wait for deployment
-      id: vercel-wait-for-deploy
-      run: |
-        vercel inspect --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }} --wait ${{ steps.vercel-deploy.outputs.url }} --timeout 10m --scope clerk-production
-
-        vercel alias set ${{ steps.vercel-deploy.outputs.url }} javascript-preview-${{ github.event.issue.number }}.clerkpreview.com --token=${{ secrets.VERCEL_CLERK_COOKIE_TOKEN }} --scope clerk-production
-
-        echo "stable_url=https://javascript-preview-${{ github.event.issue.number }}.clerkpreview.com" >> $GITHUB_OUTPUT
-    - name: Create preview comment - Deployed
-      uses: marocchino/sticky-pull-request-comment@v2.8.0
+        name: turbo-summary-report-lint-${{ github.run_id }}-${{ github.run_attempt }}
+        path: .turbo/runs
+        retention-days: 5
+  unit-tests:
+    name: Unit Tests
+    needs: formatting-linting
+    runs-on: ${{ vars.RUNNER_LARGE || 'ubuntu-latest-l' }}
+    timeout-minutes: ${{ vars.TIMEOUT_MINUTES_NORMAL && fromJSON(vars.TIMEOUT_MINUTES_NORMAL) || 10 }}
+    env:
+      TURBO_SUMMARIZE: false
+    strategy:
+      matrix:
+        node-version:
+        - 18
+        - 20
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
       with:
-        GITHUB_TOKEN: ${{ secrets.CLERK_COOKIE_PAT }}
-        number: ${{ github.event.issue.number }}
-        header: ${{ env.COMMENT_HEADER }}
-        message: >
-          Hey @${{ github.event.comment.user.login }}, your preview is available.
+        fetch-depth: 0
+        show-progress: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup
+      id: config
+      uses: ./.github/actions/init
+      with:
+        node-version: ${{ matrix.node-version }}
+        turbo-signature: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+        turbo-summarize: ${{ env.TURBO_SUMMARIZE }}
+        turbo-team: ${{ vars.TURBO_TEAM }}
+        turbo-token: ${{ secrets.TURBO_TOKEN }}
+    - name: Apply patch
+      shell: bash
+      run: |
 
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
 
-          | Status | Preview | Updated (UTC) |
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: npx turbo test $TURBO_ARGS
+      env:
+        NODE_VERSION: ${{ matrix.node-version }}
+    - name: Upload Turbo Summary
+      uses: actions/upload-artifact@v4
+      if: ${{ env.TURBO_SUMMARIZE == 'true' }}
+      continue-on-error: true
+      with:
+        name: turbo-summary-report-unit-${{ github.run_id }}-${{ github.run_attempt }}-node-${{ matrix.node-version }}
+        path: .turbo/runs
+        retention-days: 5
+  integration-tests:
+    name: Integration Tests
+    needs: formatting-linting
+    runs-on: ${{ vars.RUNNER_LARGE || 'ubuntu-latest-l' }}
+    timeout-minutes: ${{ vars.TIMEOUT_MINUTES_LONG && fromJSON(vars.TIMEOUT_MINUTES_LONG) || 15 }}
+    strategy:
+      matrix:
+        test-name:
+        - generic
+        - express
+        - quickstart
+        - ap-flows
+        - elements
+        - sessions
+        - astro
+        - expo-web
+        test-project:
+        - chrome
+        include:
+        - test-name: nextjs
+          test-project: chrome
+          next-version: 13
+        - test-name: nextjs
+          test-project: chrome
+          next-version: 14
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        show-progress: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup
+      id: config
+      uses: ./.github/actions/init
+      with:
+        turbo-signature: ${{ secrets.TURBO_REMOTE_CACHE_SIGNATURE_KEY }}
+        turbo-team: ${{ vars.TURBO_TEAM }}
+        turbo-token: ${{ secrets.TURBO_TOKEN }}
+        playwright-enabled: true
+    - name: Task Status
+      id: task-status
+      env:
+        E2E_APP_CLERK_JS_DIR: ${{runner.temp}}
+        E2E_CLERK_VERSION: latest
+        E2E_NEXTJS_VERSION: ${{ matrix.next-version }}
+        E2E_PROJECT: ${{ matrix.test-project }}
+        INTEGRATION_INSTANCE_KEYS: ${{ secrets.INTEGRATION_INSTANCE_KEYS }}
+      run: |
+        AFFECTED=0
 
-          | :-- | :-- | :-- |
+        (npx turbo-ignore --task=test:integration:${{ matrix.test-name }} --fallback=${{ github.base_ref || 'refs/heads/main' }}) || AFFECTED=1
 
-          | :cookie: Deployed | [Visit preview](${{ steps.vercel-wait-for-deploy.outputs.stable_url }}) | ${{ env.DATE }} |
+        echo "affected=${AFFECTED}"
 
+        echo "affected=${AFFECTED}" >> $GITHUB_OUTPUT
+    - name: Verdaccio
+      if: ${{ steps.task-status.outputs.affected == '1' }}
+      uses: ./.github/actions/verdaccio
+      with:
+        publish-cmd: >
+          if [ "$(npm config get registry)" = "https://registry.npmjs.org/" ]; then echo 'Error: Using default registry' && exit 1; else npx turbo build $TURBO_ARGS --only && npx changeset publish --no-git-tag; fi
+    - name: Install @clerk/backend in /integration
+      if: ${{ steps.task-status.outputs.affected == '1' }}
+      working-directory: ./integration
+      run: npm init -y && npm install @clerk/backend
+    - name: Install @clerk/clerk-js in os temp
+      if: ${{ steps.task-status.outputs.affected == '1' }}
+      working-directory: ${{runner.temp}}
+      run: mkdir clerk-js && cd clerk-js && npm init -y && npm install @clerk/clerk-js
+    - name: Apply patch
+      shell: bash
+      run: |
 
-          <!-- deployed:true -->
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Copy components @clerk/astro
+      if: ${{ matrix.test-name == 'astro' }}
+      run: cd packages/astro && npm run copy:components
+    - name: Write all ENV certificates to files in integration/certs
+      if: ${{ steps.task-status.outputs.affected == '1' }}
+      uses: actions/github-script@v7
+      env:
+        INTEGRATION_CERTS: ${{secrets.INTEGRATION_CERTS}}
+        INTEGRATION_ROOT_CA: ${{secrets.INTEGRATION_ROOT_CA}}
+      with:
+        script: >
+          const fs = require('fs');
+
+          const path = require('path');
+
+          const rootCa = process.env.INTEGRATION_ROOT_CA;
+
+          console.log('rootCa', rootCa);
+
+          fs.writeFileSync(path.join(process.env.GITHUB_WORKSPACE, 'integration/certs', 'rootCA.pem'), rootCa);
+
+          const certs = JSON.parse(process.env.INTEGRATION_CERTS);
+
+          for (const [name, cert] of Object.entries(certs)) {
+              fs.writeFileSync(path.join(process.env.GITHUB_WORKSPACE, 'integration/certs', name), cert);
+          }
+    - name: LS certs
+      if: ${{ steps.task-status.outputs.affected == '1' }}
+      working-directory: ./integration/certs
+      run: ls -la && pwd
+    - name: Run Integration Tests (ces)
+      if: ${{ steps.task-status.outputs.affected == '1' }}
+      id: integration-tests
+      run: sudo --preserve-env npx turbo test:integration:${{ matrix.test-name }} $TURBO_ARGS --only -- --project=${{ matrix.test-project }}
+      env:
+        E2E_APP_CLERK_JS_DIR: ${{runner.temp}}
+        E2E_CLERK_VERSION: latest
+        E2E_NEXTJS_VERSION: ${{ matrix.next-version }}
+        E2E_PROJECT: ${{ matrix.test-project }}
+        E2E_CLERK_ENCRYPTION_KEY: ${{ matrix.clerk-encryption-key }}
+        INTEGRATION_INSTANCE_KEYS: ${{ secrets.INTEGRATION_INSTANCE_KEYS }}
+        MAILSAC_API_KEY: ${{ secrets.MAILSAC_API_KEY }}
+        NODE_EXTRA_CA_CERTS: ${{ github.workspace }}/integration/certs/rootCA.pem
+    - name: Upload test-results (ces)
+      if: ${{ cancelled() || failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: playwright-traces-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.test-name }}
+        path: integration/test-results
+        retention-days: 1
