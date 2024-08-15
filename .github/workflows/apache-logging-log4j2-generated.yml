@@ -1,0 +1,61 @@
+name: apache/logging-log4j2
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: read-all
+jobs:
+  build:
+    if: true
+    uses: apache/logging-parent/.github/workflows/build-reusable.yaml@develocity
+    secrets:
+      DV_ACCESS_TOKEN: ${{ ! startsWith(github.refname, 'release/') && secrets.GE_ACCESS_TOKEN }}
+    with:
+      java-version: >
+        8
+
+        17
+      site-enabled: true
+      reproducibility-check-enabled: false
+      develocity-enabled: true
+  deploy-snapshot:
+    needs: build
+    if: true
+    uses: apache/logging-parent/.github/workflows/deploy-snapshot-reusable.yaml@rel/11.1.0
+    secrets:
+      NEXUS_USERNAME: ${{ secrets.NEXUS_USER }}
+      NEXUS_PASSWORD: ${{ secrets.NEXUS_PW }}
+    with:
+      java-version: >
+        8
+
+        17
+  deploy-release:
+    needs: build
+    if: true
+    uses: apache/logging-parent/.github/workflows/deploy-release-reusable.yaml@rel/11.1.0
+    secrets:
+      GPG_SECRET_KEY: ${{ secrets.LOGGING_GPG_SECRET_KEY }}
+      NEXUS_USERNAME: ${{ secrets.LOGGING_STAGE_DEPLOYER_USER }}
+      NEXUS_PASSWORD: ${{ secrets.LOGGING_STAGE_DEPLOYER_PW }}
+      SVN_USERNAME: ${{ secrets.LOGGING_SVN_DEV_USERNAME }}
+      SVN_PASSWORD: ${{ secrets.LOGGING_SVN_DEV_PASSWORD }}
+    permissions:
+      contents: write
+    with:
+      java-version: >
+        8
+
+        17
+      project-id: log4j
