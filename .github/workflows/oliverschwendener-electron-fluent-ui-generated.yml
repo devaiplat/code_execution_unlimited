@@ -15,16 +15,9 @@ on:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
 jobs:
-  release:
-    strategy:
-      matrix:
-        os:
-        - macos-13
-        - macos-14
-        - windows-2022
-        - ubuntu-22.04
-    runs-on: ${{ matrix.os }}
-    name: Release
+  build:
+    runs-on: ubuntu-22.04
+    name: Build
     steps:
     - name: Checkout current commit/branch/tag
       uses: actions/checkout@v4
@@ -87,12 +80,7 @@ jobs:
       run: npm run typecheck
     - name: Prettier check
       run: npm run prettier:check
-    - name: Build
+    - name: Run tests (ces)
+      run: npm run test
+    - name: Build app
       run: npm run build
-      env:
-        NODE_ENV: production
-    - name: Package and publish
-      run: npm run package:publish
-      env:
-        CI: true
-        GH_TOKEN: ${{ secrets.GH_TOKEN }}
