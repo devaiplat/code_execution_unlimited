@@ -14,27 +14,18 @@ on:
       ref:
         description: The repo branch, tag, or commit SHA to checkout
         required: false
+permissions: read-all
 jobs:
-  Trigger:
-    if: true
-    permissions:
-      actions: write
-    strategy:
-      matrix:
-        branch:
-        - master
-        - release-1.20
-        - release-1.19
-        - release-1.18
-    runs-on: ubuntu-latest
-    steps:
-    - name: Trigger Workflow
-      uses: actions/github-script@v7
-      with:
-        script: >
-          github.rest.actions.createWorkflowDispatch({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            workflow_id: 'nightly.yml',
-            ref: '${{ matrix.branch }}'
-          })
+  pre-compile-checks:
+    name: Pre-compile Checks
+    uses: ./.github/workflows/template.pre-compile-checks.yml
+  ci:
+    name: Default (Java 8)
+    uses: ./.github/workflows/template.flink-ci.yml
+    with:
+      environment: PROFILE="-Dinclude_hadoop_aws"
+      jdk_version: 8
+    secrets:
+      s3_bucket: ${{ secrets.IT_CASE_S3_BUCKET }}
+      s3_access_key: ${{ secrets.IT_CASE_S3_ACCESS_KEY }}
+      s3_secret_key: ${{ secrets.IT_CASE_S3_SECRET_KEY }}
