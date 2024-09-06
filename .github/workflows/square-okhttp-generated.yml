@@ -39,7 +39,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Upload Artifacts
       run: ./gradlew clean publish --stacktrace
       env:
@@ -54,7 +54,7 @@ jobs:
       with:
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
-    - uses: gradle/actions/wrapper-validation@v3
+    - uses: gradle/actions/wrapper-validation@v4
     - name: Validate Renovate
       uses: rinchsan/renovate-config-validator@v0.2.0
       with:
@@ -81,7 +81,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew check -PandroidBuild=true -PgraalBuild=true -x test -x test
   testopenjdk11:
@@ -106,7 +106,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dtest.java.version=11
     - name: Apply patch
@@ -184,7 +184,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dtest.java.version=11
   testopenjdk8:
@@ -208,7 +208,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dtest.java.version=8
   testopenjdk8alpn:
@@ -237,7 +237,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dtest.java.version=8 -Dokhttp.platform=jdk8alpn -Dalpn.boot.version=8.1.13.v20181017 -Dorg.gradle.java.installations.paths=/opt/hostedtoolcache/Java_Adopt_jdk/8.0.242-8.1/x64
   testopenjsse:
@@ -261,7 +261,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dtest.java.version=8 -Dokhttp.platform=openjsse
   testconscrypt:
@@ -285,7 +285,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dokhttp.platform=conscrypt
   testbouncycastle:
@@ -309,7 +309,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dokhttp.platform=bouncycastle
   testcorretto:
@@ -333,7 +333,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dokhttp.platform=corretto
   testopenjdk17:
@@ -357,7 +357,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dtest.java.version=17
   testopenjdk21:
@@ -386,7 +386,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dtest.java.version=21
   testwindows:
@@ -410,7 +410,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Apply patch
       shell: bash
       run: |
@@ -476,11 +476,11 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Build okcurl
       run: ./gradlew okcurl:nativeImage
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Build ConsoleLauncher
       run: ./gradlew -PgraalBuild=true native-image-tests:nativeImage
     - name: Run Checks
@@ -521,7 +521,7 @@ jobs:
 
         sudo udevadm trigger --name-match=kvm
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Gradle cache
       run: ./gradlew -PandroidBuild=true :okhttp-android:test
     - name: AVD cache
@@ -627,7 +627,7 @@ jobs:
         distribution: zulu
         java-version: 17
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: Run Checks
       run: ./gradlew test -Dokhttp.platform=loom -Dtest.java.version=21 -PcontainerTests=true
   testandroidregression:
@@ -665,7 +665,7 @@ jobs:
 
         sudo udevadm trigger --name-match=kvm
     - name: Gradle cache
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
     - name: AVD cache
       uses: actions/cache@v4
       id: avd-cache
