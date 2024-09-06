@@ -21,7 +21,7 @@ jobs:
       matrix:
         os:
         - windows-latest
-        - macos-13
+        - macos-14
     runs-on: ${{ matrix.os }}
     steps:
     - name: Checkout code
@@ -30,13 +30,13 @@ jobs:
         repository: ${{ github.event.inputs.repoName }}
         ref: ${{ github.event.inputs.ref }}
     - name: Install .NET 8
-      uses: actions/setup-dotnet@v3.2.0
+      uses: actions/setup-dotnet@v4.0.1
       with:
         dotnet-version: 8.0
     - name: Install .NET MAUI Workload
       run: dotnet workload install maui
     - name: Select Xcode Version
-      run: sudo xcode-select -s /Applications/Xcode_15.0.1.app
+      run: sudo xcode-select -s /Applications/Xcode_15.4.app
       if: runner.os == 'macOS'
     - name: Find and build all C# projects
       run: "$failedProjectCount=0\n$skippedProjectCount=0\n$excluded_projects_file=\"./eng/excluded_projects_\" + \"${{ runner.os }}\".ToLower() + \".txt\"\n$excluded_projects=@()\n\n$jobSummaryFile=$env:GITHUB_STEP_SUMMARY\n\nif (Test-Path $excluded_projects_file) {\n    $excluded_projects = Get-Content -Path $excluded_projects_file | Where-Object { $_ -notmatch \"^\\s*#\" -and $_ -match \"\\S\" }\n}\n\nWrite-Output \"# .NET MAUI Sample Apps Build Status (${{ runner.os }})\" | Out-File -FilePath $jobSummaryFile -Append\nWrite-Output \"| Project | Build Status |\" | Out-File -FilePath $jobSummaryFile -Append\nWrite-Output \"|---|---|\" | Out-File -FilePath $jobSummaryFile -Append\n\nGet-ChildItem -Path . -Filter *.csproj -File -Recurse | ForEach-Object {\n    $csproj = $_.FullName\n    $relativePath = (Resolve-Path -Path $csproj -Relative).Replace(\"\\\", \"/\")\n\n    # Check if the project is in the exclusion list\n    if ($excluded_projects -contains $relativePath) {\n        Write-Output \"::notice:: Skipping build for excluded project: $relativePath\"\n        Write-Output \"| $csproj | Skipped |\" | Out-File -FilePath $jobSummaryFile -Append\n\n        $skippedProjectCount++\n    }\n    else {\n        Write-Output \"::group:: Building $csproj\"\n\n        dotnet build $csproj\n\n        if ($LASTEXITCODE -gt 0) {\n            Write-Output \"::error:: Build failed for $csproj\"\n            Write-Output \"| $relativePath | :x: |\" | Out-File -FilePath $jobSummaryFile -Append\n\n            $failedProjectCount++\n        }\n        else {\n            Write-Output \"Build succeeded for $csproj\"\n            Write-Output \"| $relativePath | :white_check_mark: |\" | Out-File -FilePath $jobSummaryFile -Append\n        }\n\n        $proj_dir = [System.IO.Path]::GetDirectoryName($csproj)\n        Write-Output \"Cleaning up bin & obj in $proj_dir\"\n        Get-ChildItem -Path $proj_dir -Directory -Recurse -Include bin,obj | Remove-Item -Recurse -Force\n\n        Write-Output \"::endgroup::\"\n    }\n}\n\nif ($failedProjectCount -gt 0) {\n    Write-Output \"\" | Out-File -FilePath $jobSummaryFile -Append\n    Write-Output \"# Failed builds: $failedProjectCount\" | Out-File -FilePath $jobSummaryFile -Append\n    Write-Output \"# Skipped builds: $skippedProjectCount\" | Out-File -FilePath $jobSummaryFile -Append\n    \n    exit $failedProjectCount\n}\n"
