@@ -39,6 +39,8 @@ jobs:
         arguments: >
           -Ptesting.enableJaCoCo \
 
+          :platform-tooling-support-tests:test \
+
           build \
 
           jacocoRootReport
