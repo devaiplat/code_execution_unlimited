@@ -1,0 +1,586 @@
+name: lambdaclass/lambda_ethereum_consensus
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+env:
+  MIX_ENV: test
+  RUST_WORKSPACES: >
+    native/snappy -> target
+
+    native/ssz_nif -> target
+permissions:
+  contents: read
+jobs:
+  compile-native:
+    name: Build native libraries
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 1.21
+        cache-dependency-path: >
+          native/libp2p_port/go.sum
+    - name: Cache output artifacts
+      id: output-cache
+      uses: actions/cache@v4
+      with:
+        path: priv/native/*
+        key: ${{ runner.os }}-native-${{ hashFiles('native/**') }}
+    - name: Install dependencies
+      if: steps.output-cache.outputs.cache-hit != 'true'
+      run: |
+        sudo apt-get install -y protobuf-compiler
+
+        go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+
+        protoc --go_out=./native/libp2p_port proto/libp2p.proto
+    - name: Compile port
+      if: steps.output-cache.outputs.cache-hit != 'true'
+      run: make compile-port
+  download-beacon-node-oapi:
+    name: Download Beacon Node OAPI
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Cache Beacon Node OAPI
+      id: output-cache
+      uses: actions/cache@v4
+      with:
+        path: ./beacon-node-oapi.json
+        key: ${{ runner.os }}-beacon-node-oapi-${{ hashFiles('.oapi_version') }}
+        lookup-only: true
+    - name: Download Beacon Node OAPI
+      if: steps.output-cache.outputs.cache-hit != 'true'
+      run: make download-beacon-node-oapi
+  build:
+    name: Build project
+    needs:
+    - compile-native
+    - download-beacon-node-oapi
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Elixir
+      id: setup-beam
+      uses: erlef/setup-beam@v1
+      with:
+        version-type: strict
+        version-file: .tool-versions
+        hexpm-mirrors: >
+          https://builds.hex.pm
+
+          https://repo.hex.pm
+    - name: Fetch native libraries
+      id: output-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: priv/native/*
+        key: ${{ runner.os }}-native-${{ hashFiles('native/**') }}
+        fail-on-cache-miss: true
+    - name: Restore dependencies cache
+      uses: actions/cache@v4
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: ${{ runner.os }}-mix-
+    - name: Fetch beacon node oapi file
+      uses: actions/cache/restore@v4
+      with:
+        path: ./beacon-node-oapi.json
+        key: ${{ runner.os }}-beacon-node-oapi-${{ hashFiles('.oapi_version') }}
+        fail-on-cache-miss: true
+    - name: Install dependencies
+      run: |
+        sudo apt-get install -y protobuf-compiler
+
+        echo $(protoc --version)
+
+        mix escript.install --force hex protobuf
+
+        protoc --elixir_out=. proto/libp2p.proto
+
+        mix deps.get
+    - name: Set up cargo cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ env.RUST_WORKSPACES }}
+    - name: Compile Elixir (Warnings as errors)
+      run: mix compile --warnings-as-errors
+    - name: Retrieve PLT Cache
+      uses: actions/cache@v4
+      id: plt-cache
+      with:
+        path: priv/plts
+        key: ${{ runner.os }}-plts-${{ steps.setup-beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+    - name: Create PLTs
+      if: steps.plt-cache.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p priv/plts
+
+        mix dialyzer --plt
+    - name: Run dialyzer
+      run: mix dialyzer --no-check
+  docker-build:
+    name: Build Docker image
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Build Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: ./Dockerfile
+        load: true
+  smoke:
+    name: Start and stop the node
+    needs:
+    - compile-native
+    - download-beacon-node-oapi
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        version-type: strict
+        version-file: .tool-versions
+        hexpm-mirrors: >
+          https://builds.hex.pm
+
+          https://repo.hex.pm
+    - name: Fetch native libraries
+      id: output-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: priv/native/*
+        key: ${{ runner.os }}-native-${{ hashFiles('native/**') }}
+        fail-on-cache-miss: true
+    - name: Restore dependencies cache
+      uses: actions/cache@v4
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: ${{ runner.os }}-mix-
+    - name: Fetch beacon node oapi file
+      uses: actions/cache/restore@v4
+      with:
+        path: ./beacon-node-oapi.json
+        key: ${{ runner.os }}-beacon-node-oapi-${{ hashFiles('.oapi_version') }}
+        fail-on-cache-miss: true
+    - name: Install dependencies
+      run: |
+        sudo apt-get install -y protobuf-compiler
+
+        echo $(protoc --version)
+
+        mix escript.install --force hex protobuf
+
+        protoc --elixir_out=./lib proto/libp2p.proto
+
+        mix deps.get
+    - name: Set up cargo cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ env.RUST_WORKSPACES }}
+    - name: Compile Elixir (Warnings as errors)
+      run: mix compile --warnings-as-errors
+    - name: Run the node
+      run: mix run -- --checkpoint-sync-url https://mainnet-checkpoint-sync.stakely.io/
+  test:
+    name: Test
+    needs:
+    - compile-native
+    - download-beacon-node-oapi
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        version-type: strict
+        version-file: .tool-versions
+        hexpm-mirrors: >
+          https://builds.hex.pm
+
+          https://repo.hex.pm
+    - name: Fetch native libraries
+      id: output-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: priv/native/*
+        key: ${{ runner.os }}-native-${{ hashFiles('native/**') }}
+        fail-on-cache-miss: true
+    - name: Restore dependencies cache
+      uses: actions/cache@v4
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: ${{ runner.os }}-mix-
+    - name: Fetch beacon node oapi file
+      uses: actions/cache/restore@v4
+      with:
+        path: ./beacon-node-oapi.json
+        key: ${{ runner.os }}-beacon-node-oapi-${{ hashFiles('.oapi_version') }}
+        fail-on-cache-miss: true
+    - name: Set up cargo cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ env.RUST_WORKSPACES }}
+    - name: Install dependencies
+      run: |
+        sudo apt-get install -y protobuf-compiler
+
+        mix escript.install --force hex protobuf
+
+        protoc --elixir_out=./lib proto/libp2p.proto
+
+        mix deps.get
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: mix test --no-start --warnings-as-errors --trace --exclude spectest
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        version-type: strict
+        version-file: .tool-versions
+        hexpm-mirrors: >
+          https://builds.hex.pm
+
+          https://repo.hex.pm
+    - name: Restore dependencies cache
+      uses: actions/cache@v4
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: ${{ runner.os }}-mix-
+    - name: Install dependencies
+      run: mix deps.get
+    - name: Check format
+      run: |
+        make fmt
+
+        git diff --exit-code
+    - name: Run credo
+      run: mix credo --strict
+  download-spectests:
+    name: Download spectests
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Cache compressed spectests (ces) (ces)
+      id: output-cache
+      uses: actions/cache@v4
+      with:
+        path: ./test/spec/vectors/*.tar.gz
+        key: ${{ runner.os }}-spectest-${{ hashFiles('.spectest_version') }}
+        lookup-only: true
+    - name: Download spectests (ces)
+      if: steps.output-cache.outputs.cache-hit != 'true'
+      run: make download-vectors
+  spectests-matrix:
+    name: Run spec-tests
+    needs:
+    - compile-native
+    - download-spectests
+    - download-beacon-node-oapi
+    strategy:
+      fail-fast: false
+      matrix:
+        fork:
+        - deneb
+        config:
+        - minimal
+        - general
+        - mainnet
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        version-type: strict
+        version-file: .tool-versions
+        hexpm-mirrors: >
+          https://builds.hex.pm
+
+          https://repo.hex.pm
+    - name: Fetch native libraries
+      uses: actions/cache/restore@v4
+      with:
+        path: priv/native/*
+        key: ${{ runner.os }}-native-${{ hashFiles('native/**') }}
+        fail-on-cache-miss: true
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Fetch spectest vectors (ces) (ces)
+      uses: actions/cache/restore@v4
+      with:
+        path: ./test/spec/vectors/*.tar.gz
+        key: ${{ runner.os }}-spectest-${{ hashFiles('.spectest_version') }}
+        fail-on-cache-miss: true
+    - name: Restore dependencies cache
+      uses: actions/cache@v4
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: ${{ runner.os }}-mix-
+    - name: Fetch beacon node oapi file
+      uses: actions/cache/restore@v4
+      with:
+        path: ./beacon-node-oapi.json
+        key: ${{ runner.os }}-beacon-node-oapi-${{ hashFiles('.oapi_version') }}
+        fail-on-cache-miss: true
+    - name: Set up cargo cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ env.RUST_WORKSPACES }}
+    - name: Install dependencies
+      run: |
+        sudo apt-get install -y protobuf-compiler
+
+        mix escript.install --force hex protobuf
+
+        protoc --elixir_out=./lib proto/libp2p.proto
+
+        mix deps.get
+    - name: Update fork version
+      run: echo ${{ matrix.fork }} > .fork_version
+    - name: Uncompress vectors
+      run: make test/spec/vectors/tests/${{ matrix.config }}
+    - name: Generate tests (ces)
+      run: make gen-spec
+    - name: Run tests (ces)
+      run: |
+        if [[ "${{ matrix.config }}" == "general" ]] ; then
+          mix test --no-start test/generated/general/*/*
+        else
+          mix test --no-start test/generated/${{ matrix.config }}/${{ matrix.fork }}/*
+        fi
+  spectests-success:
+    name: All spec-tests passed
+    needs: spectests-matrix
+    runs-on: ubuntu-22.04
+    if: true
+    steps:
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - if: needs.spectests-matrix.result == 'success'
+      name: All spectests passed (ces) (ces)
+      run: exit 0
+    - if: needs.spectests-matrix.result != 'success'
+      name: Some spectests failed (ces)
+      run: exit 1
