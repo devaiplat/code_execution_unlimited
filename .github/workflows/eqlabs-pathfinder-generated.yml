@@ -1,0 +1,202 @@
+name: eqlabs/pathfinder
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 3072
+        temp-reserve-mb: 3072
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: rui314/setup-mold@v1
+    - uses: Swatinem/rust-cache@v2
+      with:
+        save-if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' }}
+    - uses: arduino/setup-protoc@v3
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: taiki-e/install-action@nextest
+    - name: Clear cache
+      if: github.event_name =='schedule'
+      run: |
+        cargo clean
+
+        rm -rf ~/.cargo/registry
+
+        rm -rf ~/.cargo/git
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Compile unit tests (ces) (ces)
+      run: cargo nextest run --all-targets --all-features --workspace --locked --no-run --timings
+    - name: Run unit tests (ces)
+      run: timeout 10m cargo nextest run --no-fail-fast --all-targets --all-features --workspace --locked
+    - name: Store timings
+      uses: actions/upload-artifact@v4
+      with:
+        name: timings
+        path: target/cargo-timings/
+        if-no-files-found: warn
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
+      with:
+        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    - uses: arduino/setup-protoc@v3
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Clear cache
+      if: github.event_name =='schedule'
+      run: |
+        cargo clean
+
+        rm -rf ~/.cargo/registry
+
+        rm -rf ~/.cargo/git
+    - run: |
+        cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D rust_2018_idioms
+
+        cargo clippy --workspace --all-targets --all-features --locked --manifest-path crates/load-test/Cargo.toml -- -D warnings -D rust_2018_idioms
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rustfmt
+    - run: |
+        cargo +nightly fmt --all -- --check
+
+        cargo +nightly fmt --all --manifest-path crates/load-test/Cargo.toml -- --check
+  doc:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    - uses: arduino/setup-protoc@v3
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Clear cache
+      if: github.event_name =='schedule'
+      run: cargo clean
+    - run: cargo doc --no-deps --document-private-items
+  dep-sort:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: baptiste0928/cargo-install@v3
+      with:
+        crate: cargo-sort
+        version: ^1.0.9
+    - run: |
+        cargo sort --check --workspace
+  typos:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: crate-ci/typos@v1.16.23
+      with:
+        files: .
+  load_test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@stable
+    - name: cargo check
+      run: |
+        cd crates/load-test
+
+        cargo check
