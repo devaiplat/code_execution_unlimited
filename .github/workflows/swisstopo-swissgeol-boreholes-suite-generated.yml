@@ -1,0 +1,139 @@
+name: swisstopo/swissgeol-boreholes-suite
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    name: Build and run tests
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    - name: Build solution
+      run: dotnet build BDMS.sln -c Release /warnaserror
+    - name: Start db and api's
+      run: docker compose up --wait minio db api-legacy api
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run dotnet tests (ces) (ces)
+      run: dotnet test BDMS.sln -c Release --no-build --verbosity normal --filter TestCategory!=LongRunning
+    - name: Setup Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - working-directory: ./src/client
+      run: npm ci
+    - working-directory: ./src/client
+      run: npm run lint
+  cypress-tests:
+    runs-on: ubuntu-latest
+    name: Run cypress tests
+    strategy:
+      fail-fast: false
+      matrix:
+        containers:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    - name: Build solution
+      run: dotnet build BDMS.sln -c Release /warnaserror
+    - name: Start db and api's
+      run: docker compose up --wait minio db api-legacy api oidc-server
+    - working-directory: ./src/client
+      run: npm ci
+    - name: Cypress run
+      uses: cypress-io/github-action@v6
+      with:
+        command: npx cypress run --record --parallel --key ${{ secrets.CYPRESS_RECORD_KEY }} --ci-build-id ${{ github.repository }}-${{ github.run_id }}-${{ github.run_attempt}}
+        build: npm run build
+        start: npm start
+        wait-on: http://localhost:3000
+        wait-on-timeout: 120
+        working-directory: ./src/client
+      env:
+        VITE_APP_VERSION: 0.0.99+dev
+        TZ: Europe/Zurich
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  view-sync:
+    runs-on: ubuntu-latest
+    name: Run view-sync
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup environment
+      working-directory: src/view-sync
+      run: docker compose -f docker-compose.services.yml up --build --wait
+    - name: Run view-sync
+      working-directory: src/view-sync
+      run: docker compose -f docker-compose.yml up --build --exit-code-from view-sync
