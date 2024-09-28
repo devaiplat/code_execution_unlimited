@@ -1,0 +1,395 @@
+name: microsoft/azuredatastudio
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CHILD_CONCURRENCY: 1
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18.15
+    - uses: actions/setup-python@v5
+      with:
+        python-version: 3.11.x
+    - name: Compute node modules cache key
+      id: nodeModulesCacheKey
+      run: echo "value=$(node build/azure-pipelines/common/sql-computeNodeModulesCacheKey.js)" >> $ENV:GITHUB_OUTPUT
+    - name: Cache node modules
+      id: cacheNodeModules
+      uses: actions/cache@v4
+      with:
+        path: '**/node_modules'
+        key: ${{ runner.os }}-cacheNodeModules20-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-cacheNodeModules20-
+    - name: Get yarn cache directory path
+      id: yarnCacheDirPath
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      run: echo "dir=$(yarn cache dir)" >> $ENV:GITHUB_OUTPUT
+    - name: Cache yarn directory
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.yarnCacheDirPath.outputs.dir }}
+        key: ${{ runner.os }}-yarnCacheDir-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-yarnCacheDir-
+    - name: Execute yarn
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      env:
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+        ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      run: yarn --frozen-lockfile --network-timeout 180000
+    - name: Create node_modules archive
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      run: |
+        mkdir -Force .build
+
+        node build/azure-pipelines/common/listNodeModules.js .build/node_modules_list.txt
+
+        mkdir -Force .build/node_modules_cache
+
+        7z.exe a .build/node_modules_cache/cache.7z -mx3 `@.build/node_modules_list.txt
+    - name: Compile and Download
+      run: yarn npm-run-all --max_old_space_size=4095 -lp compile "electron x64"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Core Unit Tests (ces) (ces)
+      run: .\scripts\test.bat
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18.15
+    - uses: actions/setup-python@v5
+      with:
+        python-version: 3.11.x
+    - name: Setup Build Environment
+      run: |
+        sudo apt-get update
+
+        sudo apt-get install -y libxkbfile-dev pkg-config libsecret-1-dev libkrb5-dev libxss1 dbus xvfb libgtk-3-0 libgbm1
+
+        sudo cp build/azure-pipelines/linux/xvfb.init /etc/init.d/xvfb
+
+        sudo chmod +x /etc/init.d/xvfb
+
+        sudo update-rc.d xvfb defaults
+
+        sudo service xvfb start
+    - name: Compute node modules cache key
+      id: nodeModulesCacheKey
+      run: echo "value=$(node build/azure-pipelines/common/sql-computeNodeModulesCacheKey.js)" >> $GITHUB_OUTPUT
+    - name: Cache node modules
+      id: cacheNodeModules
+      uses: actions/cache@v4
+      with:
+        path: '**/node_modules'
+        key: ${{ runner.os }}-cacheNodeModules20-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-cacheNodeModules20-
+    - name: Get yarn cache directory path
+      id: yarnCacheDirPath
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+    - name: Cache yarn directory
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.yarnCacheDirPath.outputs.dir }}
+        key: ${{ runner.os }}-yarnCacheDir-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-yarnCacheDir-
+    - name: Install libkrb5-dev
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      run: sudo apt install -y libkrb5-dev
+    - name: Execute yarn
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      env:
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+        ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      run: yarn --frozen-lockfile --network-timeout 180000
+    - name: Compile and Download
+      run: yarn npm-run-all --max_old_space_size=4095 -lp compile "electron x64"
+      env:
+        SQL_NO_INLINE_SOURCEMAP: 1
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Core Unit Tests (ces) (ces)
+      id: electron-unit-tests
+      run: DISPLAY=:10 ./scripts/test.sh --runGlob "**/sql/**/*.test.js" --coverage
+    - name: Run Extension Unit Tests (ces)
+      id: electron-extension-unit-tests
+      run: DISPLAY=:10 ./scripts/test-extensions-unit.sh
+    - name: Combine code coverage files
+      run: node test/combineCoverage
+    - name: Upload Code Coverage
+      uses: coverallsapp/github-action@v2.3.0
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        path-to-lcov: test/coverage/lcov.info
+  darwin:
+    name: macOS
+    runs-on: macos-latest-large
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18.15
+    - uses: actions/setup-python@v5
+      with:
+        python-version: 3.11.x
+    - name: Compute node modules cache key
+      id: nodeModulesCacheKey
+      run: echo "value=$(node build/azure-pipelines/common/sql-computeNodeModulesCacheKey.js)" >> $GITHUB_OUTPUT
+    - name: Cache node modules
+      id: cacheNodeModules
+      uses: actions/cache@v4
+      with:
+        path: '**/node_modules'
+        key: ${{ runner.os }}-cacheNodeModules20-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-cacheNodeModules20-
+    - name: Get yarn cache directory path
+      id: yarnCacheDirPath
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+    - name: Cache yarn directory
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.yarnCacheDirPath.outputs.dir }}
+        key: ${{ runner.os }}-yarnCacheDir-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-yarnCacheDir-
+    - name: Execute yarn
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      env:
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+        ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      run: yarn --frozen-lockfile --network-timeout 180000
+    - name: Compile and Download
+      run: yarn npm-run-all --max_old_space_size=4095 -lp compile "electron x64"
+    - name: Create temporary keychain
+      run: |
+        security create-keychain -p pwd $RUNNER_TEMP/buildagent.keychain
+
+        security default-keychain -s $RUNNER_TEMP/buildagent.keychain
+
+        security unlock-keychain -p pwd $RUNNER_TEMP/buildagent.keychain
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Core Unit Tests (ces) (ces)
+      run: DISPLAY=:10 ./scripts/test.sh
+  hygiene:
+    name: Hygiene and Layering
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18.15
+    - name: Compute node modules cache key
+      id: nodeModulesCacheKey
+      run: echo "value=$(node build/azure-pipelines/common/sql-computeNodeModulesCacheKey.js)" >> $GITHUB_OUTPUT
+    - name: Cache node modules
+      id: cacheNodeModules
+      uses: actions/cache@v4
+      with:
+        path: '**/node_modules'
+        key: ${{ runner.os }}-cacheNodeModules23-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-cacheNodeModules23-
+    - name: Get yarn cache directory path
+      id: yarnCacheDirPath
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      run: echo "dir=$(yarn cache dir)" >> $GITHUB_OUTPUT
+    - name: Cache yarn directory
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.yarnCacheDirPath.outputs.dir }}
+        key: ${{ runner.os }}-yarnCacheDir-${{ steps.nodeModulesCacheKey.outputs.value }}
+        restore-keys: ${{ runner.os }}-yarnCacheDir-
+    - name: Setup Build Environment
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      run: |
+        sudo apt-get update
+
+        sudo apt-get install -y libkrb5-dev
+    - name: Execute yarn
+      if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+      env:
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+        ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      run: yarn --frozen-lockfile --network-timeout 180000
+    - name: Download Playwright
+      run: yarn playwright-install
+    - name: Run Hygiene Checks
+      run: yarn gulp hygiene
+    - name: Run Valid Layers Checks
+      run: yarn valid-layers-check
+    - name: Compile /build/
+      run: yarn --cwd build compile
+    - name: Check clean git state
+      run: ./.github/workflows/check-clean-git-state.sh
+    - name: Run eslint
+      run: yarn eslint
+    - name: Run Trusted Types Checks
+      run: yarn tsec-compile-check
