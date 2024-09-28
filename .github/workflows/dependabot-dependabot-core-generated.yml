@@ -1,0 +1,307 @@
+name: dependabot/dependabot-core
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+        - path: bundler
+          name: bundler1
+          ecosystem: bundler
+        - path: bundler
+          name: bundler2
+          ecosystem: bundler
+        - path: cargo
+          name: cargo
+          ecosystem: cargo
+        - path: common
+          name: common
+          ecosystem: common
+        - path: composer
+          name: composer
+          ecosystem: composer
+        - path: docker
+          name: docker
+          ecosystem: docker
+        - path: elm
+          name: elm
+          ecosystem: elm
+        - path: git_submodules
+          name: git_submodules
+          ecosystem: gitsubmodule
+        - path: github_actions
+          name: github_actions
+          ecosystem: github-actions
+        - path: go_modules
+          name: go_module
+          ecosystem: gomod
+        - path: gradle
+          name: gradle
+          ecosystem: gradle
+        - path: hex
+          name: hex
+          ecosystem: mix
+        - path: maven
+          name: maven
+          ecosystem: maven
+        - path: npm_and_yarn
+          name: npm_and_yarn
+          ecosystem: npm
+        - path: nuget
+          name: nuget
+          ecosystem: nuget
+        - path: pub
+          name: pub
+          ecosystem: pub
+        - path: python
+          name: python
+          ecosystem: pip
+        - path: python
+          name: python_slow
+          ecosystem: pip
+        - path: swift
+          name: swift
+          ecosystem: swift
+        - path: devcontainers
+          name: devcontainers
+          ecosystem: devcontainers
+        - path: terraform
+          name: terraform
+          ecosystem: terraform
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+      id: changes
+      with:
+        token: ''
+        filters: .github/ci-filters.yml
+    - name: Build ecosystem image
+      if: steps.changes.outputs[matrix.suite.path] == 'true'
+      run: script/build ${{ matrix.suite.path }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run ${{ matrix.suite.name }} tests (ces) (ces)
+      if: steps.changes.outputs[matrix.suite.path] == 'true'
+      run: |
+        docker run \
+          --pull never \
+          --env "CI=true" \
+          --env "RAISE_ON_WARNINGS=true" \
+          --env "DEPENDABOT_TEST_ACCESS_TOKEN=${{ secrets.GITHUB_TOKEN }}" \
+          --env "SUITE_NAME=${{ matrix.suite.name }}" \
+          --rm ghcr.io/dependabot/dependabot-updater-${{ matrix.suite.ecosystem }} bash -c \
+          "cd /home/dependabot/${{ matrix.suite.path }} && ./script/ci-test"
+  updater:
+    env:
+      DOCKER_BUILDKIT: 1
+    name: Updater
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Build ecosystem image
+      run: script/build bundler
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run updater tests (ces) (ces)
+      env:
+        DEPENDABOT_TEST_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: script/ci-test-updater
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    env:
+      BUNDLE_GEMFILE: updater/Gemfile
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ruby/setup-ruby@161cd54b698f1fb3ea539faab2e036d409550e3c
+      with:
+        bundler-cache: true
+    - run: ./bin/lint
+    - run: yamllint .
+  integration:
+    env:
+      DOCKER_BUILDKIT: 1
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Build ecosystem image
+      run: script/build silent
+    - name: Setup Go
+      uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      with:
+        go-version: 1.22
+    - name: Download Dependabot CLI
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release download --repo dependabot/cli -p "*linux-amd64.tar.gz"
+
+        tar xzvf *.tar.gz >/dev/null 2>&1
+
+        ./dependabot --version
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run integration tests (ces) (ces)
+      env:
+        PATH: ${{ github.workspace }}:$PATH
+      run: |
+        cd silent/tests
+
+        go test ./...
