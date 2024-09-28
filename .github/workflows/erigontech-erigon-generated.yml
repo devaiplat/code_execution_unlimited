@@ -1,0 +1,194 @@
+name: erigontech/erigon
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    if: true
+    strategy:
+      matrix:
+        os:
+        - ubuntu-22.04
+        - macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-go@v5
+      with:
+        go-version: 1.22
+    - name: Install dependencies on Linux
+      if: runner.os == 'Linux'
+      run: sudo apt update && sudo apt install build-essential
+    - name: Build
+      run: make all
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Reproducible build test (ces) (ces)
+      run: |
+        make erigon
+
+        shasum -a256 ./build/bin/erigon > erigon1.sha256
+
+        make erigon
+
+        shasum -a256 ./build/bin/erigon > erigon2.sha256
+
+        if ! cmp -s erigon1.sha256 erigon2.sha256; then
+          echo >&2 "Reproducible build broken"; cat erigon1.sha256; cat erigon2.sha256; exit 1
+        fi
+    - name: Install golangci-lint
+      if: runner.os == 'Linux'
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v1.59.1
+        args: --help
+    - name: Lint
+      if: runner.os == 'Linux'
+      run: make lint
+    - name: Test (ces)
+      run: make test
+    - name: SonarCloud
+      if: runner.os == 'Linux'
+      uses: SonarSource/sonarcloud-github-action@v2.3.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      continue-on-error: true
+  tests-windows:
+    if: true
+    strategy:
+      matrix:
+        os:
+        - windows-2022
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: configure Pagefile
+      uses: al-cheb/configure-pagefile-action@v1.4
+      with:
+        minimum-size: 8GB
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-go@v5
+      with:
+        go-version: 1.22
+    - uses: actions/cache@v4
+      with:
+        path: >
+          C:\ProgramData\chocolatey\lib\mingw
+
+          C:\ProgramData\chocolatey\lib\cmake
+        key: chocolatey-${{ matrix.os }}
+    - name: Install dependencies
+      run: |
+        choco upgrade mingw -y --no-progress --version 13.2.0
+
+        choco install cmake -y --no-progress --version 3.27.8
+    - name: Build
+      run: .\wmake.ps1 all
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test (ces) (ces)
+      run: .\wmake.ps1 test
+    - name: Test erigon-lib (ces)
+      run: cd erigon-lib && make test-no-fuzz
