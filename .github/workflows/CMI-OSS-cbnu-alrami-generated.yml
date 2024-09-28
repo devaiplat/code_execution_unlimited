@@ -1,0 +1,46 @@
+name: CMI-OSS/cbnu-alrami
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v2
+      with:
+        node-version: 18
+    - name: load configuration
+      run: echo "$configuration" > ./packages/server/src/config/configuration.ts
+      shell: bash
+      env:
+        configuration: ${{secrets.DEV_SERVER_CONFIG}}
+    - name: yarn install and CI
+      run: |
+        yarn install
+
+        yarn global add lerna
+
+        yarn lint
+    - name: build
+      run: |
+        yarn build:admin
+
+        yarn build:mobile
+
+        yarn build:server
