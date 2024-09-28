@@ -1,0 +1,180 @@
+name: dso-toolkit/dso-toolkit
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  CI:
+    name: lint, build, test, deploy
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - uses: docker/login-action@v3
+      name: Log in to GitHub Container Registry
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions/github-script@v7
+      name: Set DT_REF
+      with:
+        script: >
+          if (context.eventName === 'push') {
+            const [ref, type] = context.ref.split('/').reverse();
+
+            if (type === 'heads' && ref.lastIndexOf('#') === 0) {
+              core.exportVariable('DT_REF', ref.replace(/#/, '_'));
+            }
+            else if (type === 'heads' && (ref === 'master' || ref === 'test')) {
+              core.exportVariable('DT_REF', ref);
+            }
+            else if (type === 'tags' && ref[0] === 'v') {
+              core.exportVariable('DT_REF', ref.substring(1));
+              core.exportVariable('DT_DIST_TAG', 'latest');
+            }
+
+            core.exportVariable('DT_CYPRESS_SNAPSHOT_MODE', type === 'heads' && ref === 'master' ? 'CYPRESS_updateSnapshots=true' : 'CYPRESS_requireSnapshots=true');
+          }
+    - name: Output DT_REF
+      run: echo $DT_REF;
+    - uses: docker/build-push-action@v5
+      name: Build and push Docker image
+      with:
+        push: true
+        tags: ghcr.io/dso-toolkit/dso-toolkit:${{ env.DT_REF }}
+        context: .
+        cache-from: >
+          ghcr.io/dso-toolkit/dso-toolkit:${{ env.DT_REF }}
+
+          ghcr.io/dso-toolkit/dso-toolkit:master
+        cache-to: type=inline
+        build-args: >
+          CI
+
+          DT_REF
+    - name: Prepare Cypress Parallel weights file
+      run: mkdir --verbose --parents ${{ github.workspace }}/storybook/cypress-parallel
+    - name: 'Cache: Cypress Parallel weights file'
+      id: cypress-parallel-weights-file-cache
+      uses: actions/cache@v4
+      with:
+        key: weights-file-${{ hashFiles('yarn.lock', 'storybook/cypress/**') }}
+        path: ${{ github.workspace }}/storybook/cypress-parallel/parallel-weights.json
+        restore-keys: >
+          weights-file-${{ hashFiles('yarn.lock', 'storybook/cypress/**') }}
+
+          weights-file-
+    - name: 'Cache: Cypress snapshots'
+      id: cypress-snapshots-cache
+      uses: actions/cache@v4
+      with:
+        key: cypress-snapshots-${{ hashFiles('yarn.lock', 'storybook/cypress/**', 'packages/(dso-toolkit|core)/src/**') }}
+        path: ${{ github.workspace }}/storybook/cypress/snapshot-baseline
+        restore-keys: >
+          cypress-snapshots-${{ hashFiles('yarn.lock', 'storybook/cypress/**', 'packages/(dso-toolkit|core)/src/**') }}
+
+          cypress-snapshots-
+    - if: ${{ steps.cypress-snapshots-cache.outputs.cache-hit == 'true' }}
+      name: List snapshots
+      continue-on-error: true
+      run: ls -al ${{ github.workspace }}/storybook/cypress/snapshot-baseline
+    - if: ${{ env.DT_REF == 'master' }}
+      name: Clean Cypress snapshots
+      run: rm -rf ${{ github.workspace }}/storybook/cypress/snapshot-baseline
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: e2e tests (ces) (ces)
+      id: e2e
+      uses: addnab/docker-run-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        image: ghcr.io/dso-toolkit/dso-toolkit:${{ env.DT_REF }}
+        options: --env CI --env DT_REF --env ${{ env.DT_CYPRESS_SNAPSHOT_MODE }} --volume ${{ github.workspace }}/storybook/cypress-parallel:/usr/src/app/storybook/cypress-parallel --volume ${{ github.workspace }}/storybook/cypress/snapshot-baseline:/usr/src/app/storybook/cypress/snapshot-baseline --volume ${{ github.workspace }}/storybook/cypress/snapshot-diff:/usr/src/app/storybook/cypress/snapshot-diff
+        run: yarn e2e
+    - uses: actions/upload-artifact@v4
+      if: ${{ !cancelled() }}
+      with:
+        name: cypress-snapshots-${{ env.DT_REF }}
+        path: ${{ github.workspace }}/storybook/cypress/snapshot-${{ env.DT_REF == 'master' && 'baseline' || 'diff' }}
+    - uses: addnab/docker-run-action@v3
+      if: ${{ !cancelled() && (env.DT_DIST_TAG != 'latest' || steps.e2e.conclusion == 'success') }}
+      name: Deploy
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        image: ghcr.io/dso-toolkit/dso-toolkit:${{ env.DT_REF }}
+        options: --env CI --env DT_REF --env DT_DIST_TAG --env DT_AZURE_STORAGE_ACCOUNT_NAME --env DT_AZURE_STORAGE_ACCOUNT_KEY --env DT_AZURE_STORAGE_HOST --env DT_AZURE_STORAGE_CONTAINER --env DT_DEPLOY_NPM_TOKEN --env GITHUB_TOKEN --env GH_TOKEN
+        run: bash deploy.sh
+      env:
+        DT_AZURE_STORAGE_ACCOUNT_NAME: ${{ env.DT_REF == 'test' && secrets.DT_AZURE_STORAGE_ACCOUNT_NAME_ACC || secrets.DT_AZURE_STORAGE_ACCOUNT_NAME }}
+        DT_AZURE_STORAGE_ACCOUNT_KEY: ${{ env.DT_REF == 'test' && secrets.DT_AZURE_STORAGE_ACCOUNT_KEY_ACC || secrets.DT_AZURE_STORAGE_ACCOUNT_KEY }}
+        DT_AZURE_STORAGE_HOST: ${{ env.DT_REF == 'test' && secrets.DT_AZURE_STORAGE_HOST_ACC || secrets.DT_AZURE_STORAGE_HOST }}
+        DT_AZURE_STORAGE_CONTAINER: ${{ env.DT_REF == 'test' && secrets.DT_AZURE_STORAGE_CONTAINER_ACC || secrets.DT_AZURE_STORAGE_CONTAINER }}
+        DT_DEPLOY_NPM_TOKEN: ${{ secrets.DT_DEPLOY_NPM_TOKEN }}
+        GH_TOKEN: ${{ github.token }}
+    - run: gh release create v${DT_REF} --generate-notes --verify-tag
+      if: ${{ env.DT_DIST_TAG == 'latest' }}
+      name: Create GitHub release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
