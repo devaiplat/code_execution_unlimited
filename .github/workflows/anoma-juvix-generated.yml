@@ -1,0 +1,554 @@
+name: anoma/juvix
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+env:
+  SKIP: ormolu,format-juvix-files,typecheck-juvix-examples
+  VAMPIRREPO: anoma/vamp-ir
+  VAMPIRVERSION: v0.1.3
+  CAIRO_VM_VERSION: 06e8ddbfa14eef85f56c4d7b7631c17c9b0a248e
+  RISC0_VM_VERSION: v1.0.1
+  JUST_ARGS: runtimeCcArg=$CC runtimeLibtoolArg=$LIBTOOL
+  STACK_BUILD_ARGS: --pedantic -j4 --ghc-options=-j
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    - uses: pre-commit/action@v3.0.0
+  ormolu:
+    runs-on: ubuntu-latest
+    env:
+      STACK_RESOLVER: lts-21.25
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: extractions/setup-just@v2
+    - name: Install hpack
+      run: sudo apt install -y hpack
+    - name: Generate juvix.cabal
+      run: hpack
+    - name: Cache ormolu
+      id: ormolu-cache
+      uses: actions/cache@v3
+      with:
+        path: >
+          ~/.local/bin/ormolu
+        key: ${{ runner.os }}-ormolu-${{ env.STACK_RESOLVER }}
+    - name: Install ormolu
+      if: steps.ormolu-cache.outputs.cache-hit != 'true'
+      run: stack install ormolu --resolver=${{ env.STACK_RESOLVER }}
+    - name: Run ormolu
+      run: just format check
+    - name: Report formatting error
+      if: failure()
+      run: echo "Some Haskell files are not formatted. Please run 'just format'"
+  build-and-test-linux:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Free disk space
+      run: |
+        df -h
+
+        echo "/usr/local"
+
+        du -hsc /usr/local/*
+
+        sudo rm -rf \
+          /usr/local/aws-sam-cil \
+          /usr/local/julia* || :
+        echo "end /usr/local"
+
+        echo "/usr/local/lib"
+
+        du -hsc /usr/local/lib/*
+
+        sudo rm -rf \
+          /usr/local/lib/android \
+          /usr/local/lib/heroku \
+          /usr/local/lib/node_modules || :
+        echo "end /usr/local/lib"
+
+        echo "/usr/local/share"
+
+        du -hsc /usr/local/share/*
+
+        sudo rm -rf \
+          /usr/local/share/chromium \
+          /usr/local/share/powershell || :
+        echo "end /usr/local/share"
+
+        echo "/opt/hostedtoolcache/"
+
+        du -hsc /opt/hostedtoolcache/*
+
+        sudo rm -rf \
+          /opt/hostedtoolcache/CodeQL \
+          /opt/hostedtoolcache/go \
+          /opt/hostedtoolcache/PyPy \
+          /opt/hostedtoolcache/node || :
+        echo "end /opt/hostedtoolcache/*"
+
+        sudo apt purge -y \
+          firefox \
+          google-chrome-stable \
+          microsoft-edge-stable
+        df -h
+    - uses: extractions/setup-just@v2
+    - name: Checkout our repository
+      uses: actions/checkout@v3
+      with:
+        path: main
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Cache LLVM and Clang
+      id: cache-llvm
+      uses: actions/cache@v3
+      with:
+        path: >
+          C:/Program Files/LLVM
+
+          ./llvm
+        key: ${{ runner.os }}-llvm-13
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@v1
+      with:
+        version: 13.0
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - name: Download and extract wasi-sysroot
+      run: |
+        curl https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-15/wasi-sysroot-15.0.tar.gz -OL
+
+        tar xfv wasi-sysroot-15.0.tar.gz
+    - name: Set WASI_SYSROOT_PATH
+      run: |
+        echo "WASI_SYSROOT_PATH=$GITHUB_WORKSPACE/wasi-sysroot" >> $GITHUB_ENV
+    - name: Add ~/.local/bin to PATH
+      run: |
+        mkdir -p "$HOME/.local/bin"
+
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+    - run: echo "HOME=$HOME" >> $GITHUB_ENV
+      shell: bash
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install the latest Wasmer version (ces) (ces)
+      uses: jaxxstorm/action-install-gh-release@v1.10.0
+      with:
+        repo: wasmerio/wasmer
+        binaries-location: bin
+        chmod: 0755
+    - name: Install libs
+      run: sudo apt install -y libncurses5
+    - name: Install VampIR for testing (ces)
+      uses: jaxxstorm/action-install-gh-release@v1.10.0
+      with:
+        repo: ${{ env.VAMPIRREPO }}
+        platform: linux
+        tag: ${{ env.VAMPIRVERSION }}
+        chmod: 0755
+        rename-to: vamp-ir
+    - name: Test VampIR (ces)
+      shell: bash
+      run: |
+        vamp-ir --version
+    - name: Cache CairoVM
+      id: cache-cairo-vm
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.HOME }}/.local/bin/juvix-cairo-vm
+        key: ${{ runner.os }}-cairo-vm-${{ env.CAIRO_VM_VERSION }}
+    - name: Install Rust toolchain
+      if: steps.cache-cairo-vm.outputs.cache-hit != 'true'
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        cache-on-failure: false
+    - name: Install RISC0 VM
+      shell: bash
+      run: |
+        cargo install cargo-binstall@1.6.9 --force
+
+        cargo binstall cargo-risczero@1.1.1 --no-confirm --force
+
+        cargo risczero install
+    - name: Checkout CairoVM
+      uses: actions/checkout@v4
+      if: steps.cache-cairo-vm.outputs.cache-hit != 'true'
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: juvix-cairo-vm
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Cairo VM
+      if: steps.cache-cairo-vm.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd juvix-cairo-vm
+
+        cargo build --release
+
+        cp target/release/juvix-cairo-vm $HOME/.local/bin/juvix-cairo-vm
+    - name: Install run_cairo_vm.sh
+      shell: bash
+      run: |
+        cp main/scripts/run_cairo_vm.sh $HOME/.local/bin/run_cairo_vm.sh
+    - name: Make runtime
+      run: |
+        cd main
+
+        just ${{ env.JUST_ARGS }} build runtime
+    - name: Test Rust runtime (ces)
+      run: |
+        cd main/runtime/rust/juvix
+
+        cargo test --release
+    - name: Cache .hie
+      id: cache-hie
+      uses: actions/cache@v3
+      with:
+        path: main/.hie
+        key: ${{ runner.os }}-stack-hie
+    - name: Stack setup
+      id: stack
+      uses: freckle/stack-action@v5
+      with:
+        working-directory: main
+        stack-build-arguments: ${{ env.STACK_BUILD_ARGS }}
+        test: false
+    - name: Install and test Juvix (ces)
+      id: test
+      if: ${{ success() }}
+      run: |
+        cd main
+
+        just ${{ env.JUST_ARGS }} install
+
+        just ${{ env.JUST_ARGS }} test
+    - name: Typecheck and format Juvix examples
+      if: ${{ success() }}
+      shell: bash
+      run: |
+        cd main
+
+        make check-format-juvix-files && make typecheck-juvix-examples
+    - name: Install Smoke for testing (ces)
+      uses: jaxxstorm/action-install-gh-release@v1.10.0
+      with:
+        repo: jonaprieto/smoke
+        platform: linux
+        tag: v2.3.2
+        chmod: 0755
+        rename-to: smoke
+        extension-matching: disable
+        cache: enable
+    - name: Setup git
+      shell: bash
+      run: |
+        git config --global user.email "tara-juvix@heliax.dev"
+
+        git config --global user.name "Tara"
+
+        git config --global init.defaultBranch main
+    - name: Smoke testing (ces)
+      id: smoke-linux
+      if: ${{ success() }}
+      run: |
+        cd main
+
+        make smoke-only
+  build-and-test-macos:
+    runs-on: macos-14
+    if: true
+    steps:
+    - uses: extractions/setup-just@v2
+    - name: Checkout our repository
+      uses: actions/checkout@v3
+      with:
+        path: main
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: install stack
+      run: |
+        brew install haskell-stack
+    - name: Install Sed
+      run: |
+        brew install gnu-sed
+
+        echo "$(brew --prefix)/opt/gnu-sed/libexec/gnubin" >> $GITHUB_PATH
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test Sed (ces) (ces)
+      run: |
+        sed --version
+    - name: Install coreutils
+      run: |
+        brew install coreutils
+    - name: Test sha256sum (used by smoke) (ces)
+      run: |
+        sha256sum --version
+    - name: Download and extract wasi-sysroot
+      run: |
+        curl https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-15/wasi-sysroot-15.0.tar.gz -OL
+
+        tar xfv wasi-sysroot-15.0.tar.gz
+    - name: Set WASI_SYSROOT_PATH
+      run: |
+        echo "WASI_SYSROOT_PATH=$GITHUB_WORKSPACE/wasi-sysroot" >> $GITHUB_ENV
+    - name: Install the latest Wasmer version (ces)
+      uses: jaxxstorm/action-install-gh-release@v1.11.0
+      with:
+        repo: wasmerio/wasmer
+        binaries-location: bin
+        chmod: 0755
+    - name: Checkout smoke repo
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+        path: smoke-repo
+    - name: Install ICU4C
+      run: |
+        brew install icu4c
+
+        brew link icu4c --force
+    - name: Get ICU4C version
+      id: icuversion
+      run: |
+        ICUVERSION=$(echo -n $(brew list --versions icu4c | head -n 1 | sed -E 's/ /-/g'))
+
+        echo "version=$ICUVERSION" >> $GITHUB_OUTPUT
+    - name: Build smoke
+      env:
+        LDFLAGS: -L/usr/local/opt/icu4c/lib
+        CPPFLAGS: -I/usr/local/opt/icu4c/include
+        PKG_CONFIG_PATH: /usr/local/opt/icu4c/lib/pkgconfig
+      uses: freckle/stack-action@v4
+      with:
+        test: false
+        stack-arguments: --copy-bins
+        working-directory: smoke-repo
+        cache-prefix: ${{ runner.arch }}-${{ steps.icuversion.outputs.version }}
+        pedantic: false
+    - name: Set homebrew LLVM CC and LIBTOOL vars (macOS)
+      run: |
+        echo "CC=$(brew --prefix llvm@15)/bin/clang" >> $GITHUB_ENV
+
+        echo "LIBTOOL=$(brew --prefix llvm@15)/bin/llvm-ar" >> $GITHUB_ENV
+    - name: Add ~/.local/bin to PATH
+      run: |
+        mkdir -p "$HOME/.local/bin"
+
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+    - run: echo "HOME=$HOME" >> $GITHUB_ENV
+      shell: bash
+    - name: Cache CairoVM
+      id: cache-cairo-vm
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.HOME }}/.local/bin/juvix-cairo-vm
+        key: ${{ runner.os }}-${{ runner.arch }}-cairo-vm-${{ env.CAIRO_VM_VERSION }}
+    - name: Install Rust toolchain
+      if: steps.cache-cairo-vm.outputs.cache-hit != 'true'
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Install RISC0 VM
+      shell: bash
+      run: |
+        cargo install cargo-binstall@1.6.9 --force
+
+        cargo binstall cargo-risczero@1.1.1 --no-confirm --force
+
+        cargo risczero install
+    - name: Checkout CairoVM
+      uses: actions/checkout@v4
+      if: steps.cache-cairo-vm.outputs.cache-hit != 'true'
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: juvix-cairo-vm
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Cairo VM
+      if: steps.cache-cairo-vm.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd juvix-cairo-vm
+
+        cargo build --release
+
+        cp -a target/release/juvix-cairo-vm $HOME/.local/bin/juvix-cairo-vm
+    - name: Install run_cairo_vm.sh
+      shell: bash
+      run: |
+        cp -a main/scripts/run_cairo_vm.sh $HOME/.local/bin/run_cairo_vm.sh
+    - name: Make runtime
+      run: |
+        cd main
+
+        just ${{ env.JUST_ARGS }} build runtime
+    - name: Test Rust runtime (ces)
+      run: |
+        cd main/runtime/rust/juvix
+
+        cargo test --release
+    - name: Cache .hie
+      id: cache-hie
+      uses: actions/cache@v3
+      with:
+        path: main/.hie
+        key: ${{ runner.os }}-${{ runner.arch }}-stack-hie
+    - name: Stack setup
+      id: stack
+      uses: freckle/stack-action@v5
+      with:
+        working-directory: main
+        stack-build-arguments: ${{ env.STACK_BUILD_ARGS }}
+        test: false
+        cache-prefix: ${{ runner.arch }}
+    - name: Add homebrew clang to the PATH (macOS)
+      run: |
+        echo "$(brew --prefix llvm@15)/bin" >> $GITHUB_PATH
+    - name: Install VampIR for testing (ces)
+      uses: jaxxstorm/action-install-gh-release@v1.11.0
+      with:
+        repo: ${{ env.VAMPIRREPO }}
+        platform: darwin
+        arch: x86_64
+        tag: ${{ env.VAMPIRVERSION }}
+        chmod: 0755
+        rename-to: vamp-ir
+    - name: Test VampIR (ces)
+      shell: bash
+      run: |
+        vamp-ir --version
+    - name: Install and test Juvix (ces)
+      if: ${{ success() }}
+      run: |
+        cd main
+
+        just ${{ env.JUST_ARGS }} install
+
+        just ${{ env.JUST_ARGS }} test
+    - name: Typecheck and format Juvix examples
+      if: ${{ success() }}
+      shell: bash
+      run: |
+        cd main
+
+        make check-format-juvix-files && make typecheck-juvix-examples
+    - name: Setup git
+      shell: bash
+      run: |
+        git config --global user.email "tara-juvix@heliax.dev"
+
+        git config --global user.name "Tara"
+
+        git config --global init.defaultBranch main
+    - name: Smoke testing (macOS) (ces)
+      id: smoke-macos
+      if: ${{ success() }}
+      run: |
+        cd main
+
+        make CC=$CC LIBTOOL=$LIBTOOL smoke
