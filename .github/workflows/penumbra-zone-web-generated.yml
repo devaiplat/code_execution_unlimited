@@ -1,0 +1,150 @@
+name: penumbra-zone/web
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  turbo-compile:
+    name: Compile
+    uses: ./.github/workflows/compile-wasm.yml
+  turbo-lint:
+    name: Lint
+    runs-on: buildjet-8vcpu-ubuntu-2204
+    needs: turbo-compile
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - id: lint
+      uses: buildjet/cache@v4
+      with:
+        path: .turbo
+        key: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-lint
+        restore-keys: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-compiled
+    - uses: pnpm/action-setup@v4
+    - uses: buildjet/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - run: pnpm turbo telemetry disable
+    - run: pnpm turbo lint:strict --cache-dir=.turbo
+  turbo-build:
+    name: Build
+    runs-on: buildjet-8vcpu-ubuntu-2204
+    needs: turbo-compile
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - id: built
+      uses: buildjet/cache@v4
+      with:
+        path: .turbo
+        key: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-built
+        restore-keys: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-compiled
+    - uses: pnpm/action-setup@v4
+    - uses: buildjet/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - run: pnpm turbo telemetry disable
+    - run: pnpm turbo build --cache-dir=.turbo
+  turbo-test:
+    name: test
+    runs-on: buildjet-4vcpu-ubuntu-2204
+    needs: turbo-compile
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - id: tested
+      uses: buildjet/cache@v4
+      with:
+        path: .turbo
+        key: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-test
+        restore-keys: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-compiled
+    - uses: pnpm/action-setup@v4
+    - uses: buildjet/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - run: pnpm turbo telemetry disable
+    - run: pnpm playwright install --with-deps chromium
+    - run: pnpm turbo test --cache-dir=.turbo
+  turbo-lint-rust:
+    name: lint:rust
+    runs-on: buildjet-4vcpu-ubuntu-2204
+    needs: turbo-compile
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - id: rust-linted
+      uses: buildjet/cache@v4
+      with:
+        path: .turbo
+        key: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-lint:rust
+        restore-keys: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-compiled
+    - uses: pnpm/action-setup@v4
+    - uses: buildjet/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - run: pnpm turbo telemetry disable
+    - run: pnpm turbo lint:rust --cache-dir=.turbo
+  turbo-test-rust:
+    name: test:wasm
+    runs-on: buildjet-16vcpu-ubuntu-2204
+    needs: turbo-compile
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - id: tested
+      uses: buildjet/cache@v4
+      with:
+        path: .turbo
+        key: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-test:wasm
+        restore-keys: ${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.ref }}-${{ github.sha }}-compiled
+    - uses: pnpm/action-setup@v4
+    - uses: buildjet/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - run: pnpm install --frozen-lockfile
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: jetli/wasm-pack-action@v0.4.0
+      with:
+        version: latest
+    - uses: browser-actions/setup-firefox@v1
+    - run: pnpm turbo telemetry disable
+    - run: pnpm turbo test:wasm --cache-dir=.turbo
+    - run: pnpm turbo test:cargo --cache-dir=.turbo
