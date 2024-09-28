@@ -1,0 +1,228 @@
+name: jetstreamapp/jetstream
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  LOG_LEVEL: warn
+  CONTENTFUL_HOST: cdn.contentful.com
+  CONTENTFUL_SPACE: wuv9tl5d77ll
+  CONTENTFUL_TOKEN: ${{ secrets.CONTENTFUL_TOKEN }}
+  NX_CLOUD_DISTRIBUTED_EXECUTION: false
+  NX_PUBLIC_AMPLITUDE_KEY: ${{ secrets.NX_PUBLIC_AMPLITUDE_KEY }}
+  NX_PUBLIC_AUTH_AUDIENCE: http://getjetstream.app/app_metadata
+  NX_PUBLIC_ROLLBAR_KEY: ${{ secrets.NX_PUBLIC_ROLLBAR_KEY }}
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+      name: Checkout [master]
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup branch tracking
+      if: success() && github.ref != 'refs/heads/main'
+      run: git branch --track main origin/main
+    - name: Derive appropriate SHAs for base and head for `nx affected` commands
+      uses: nrwl/nx-set-shas@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: yarn
+    - name: install dependencies
+      run: yarn install --frozen-lockfile
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test all affected projects (ces) (ces)
+      env:
+        NODE_OPTIONS: --max_old_space_size=4096
+      run: yarn test:all
+    - name: Build
+      env:
+        NODE_OPTIONS: --max_old_space_size=4096
+      run: yarn build:ci
+    - name: Uploading artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist-artifacts
+        path: dist
+  e2e:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    env:
+      LOG_LEVEL: warn
+      AUTH0_CLIENT_ID: shxza1G0595Ut2htmAd3NfbMMsqelrE5
+      AUTH0_CLIENT_SECRET: NOT-NEEDED
+      AUTH0_DOMAIN: getjetstream-dev.us.auth0.com
+      E2E_LOGIN_PASSWORD: ${{ secrets.E2E_LOGIN_PASSWORD }}
+      E2E_LOGIN_URL: https://jetstream-e2e-dev-ed.develop.my.salesforce.com
+      E2E_LOGIN_USERNAME: integration@jetstream.app.e2e
+      EXAMPLE_USER_OVERRIDE: true
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GOOGLE_APP_ID: ${{ secrets.GOOGLE_APP_ID }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      JETSTREAM_POSTGRES_DBURI: postgres://postgres:postgres@localhost:5432/postgres
+      JETSTREAM_SESSION_SECRET: ${{ secrets.JETSTREAM_SESSION_SECRET }}
+      JETSTREAM_CLIENT_URL: http://localhost:3333/app
+      JETSTREAM_SERVER_DOMAIN: localhost:3333
+      JETSTREAM_SERVER_URL: http://localhost:3333
+      NX_PUBLIC_AMPLITUDE_KEY: ${{ secrets.NX_PUBLIC_AMPLITUDE_KEY }}
+      NX_PUBLIC_AUTH_AUDIENCE: http://getjetstream.app/app_metadata
+      NX_CLOUD_DISTRIBUTED_EXECUTION: false
+      NX_PUBLIC_ROLLBAR_KEY: ${{ secrets.NX_PUBLIC_ROLLBAR_KEY }}
+      SFDC_CALLBACK_URL: http://localhost:3333/oauth/sfdc/callback
+      SFDC_CONSUMER_KEY: ${{ secrets.SFDC_CONSUMER_KEY }}
+      SFDC_CONSUMER_SECRET: ${{ secrets.SFDC_CONSUMER_SECRET }}
+      SFDC_ENC_KEY: ${{ secrets.SFDC_ENC_KEY }}
+      SFDC_API_VERSION: 58.0
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+        ports:
+        - 5432:5432
+    steps:
+    - uses: actions/checkout@v4
+      name: Checkout [master]
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: yarn
+    - name: install dependencies
+      run: yarn install --frozen-lockfile
+    - name: Download artifacts from build
+      uses: actions/download-artifact@v4
+      with:
+        name: dist-artifacts
+        path: dist
+    - name: Install Playwright dependencies
+      run: npx playwright install --with-deps
+    - name: Generate database
+      run: yarn db:generate
+    - name: Run database migration
+      run: yarn db:migrate
+    - name: Seed DB
+      run: yarn db:seed
+      env:
+        POSTGRES_HOST: localhost
+        PGHOST: localhost
+        PGPORT: 5432
+        PGUSER: postgres
+        PGPASSWORD: postgres
+        PGDATABASE: postgres
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run E2E tests (ces) (ces)
+      run: yarn playwright:test:with-server
+    - name: Upload test results (ces)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: playwright-report
+        path: >
+          apps/jetstream-e2e/playwright-report
+
+          test-results
