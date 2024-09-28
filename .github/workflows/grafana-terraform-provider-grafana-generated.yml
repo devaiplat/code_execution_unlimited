@@ -1,0 +1,140 @@
+name: grafana/terraform-provider-grafana
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      with:
+        go-version-file: go.mod
+    - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+    - run: make integration-test
+  cloudinstance:
+    concurrency:
+      group: cloud-instance
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      with:
+        go-version-file: go.mod
+    - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+    - name: Get Secrets
+      uses: grafana/shared-workflows/actions/get-vault-secrets@main
+      with:
+        repo_secrets: >
+          GRAFANA_AUTH=cloud-instance-tests:auth
+
+          GRAFANA_ONCALL_ACCESS_TOKEN=cloud-instance-tests:oncall-token
+
+          GRAFANA_SM_ACCESS_TOKEN=cloud-instance-tests:sm-token
+
+          GRAFANA_SM_URL=cloud-instance-tests:sm-url
+
+          GRAFANA_URL=cloud-instance-tests:url
+    - uses: iFaxity/wait-on-action@a7d13170ec542bdca4ef8ac4b15e9c6aa00a6866
+      with:
+        resource: ${{ env.GRAFANA_URL }}
+        interval: 2000
+        timeout: 30000
+    - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
+      with:
+        timeout_minutes: 30
+        max_attempts: 3
+        command: make testacc-cloud-instance
+  local:
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+        - 11.0.0
+        - 10.4.3
+        - 9.5.18
+        type:
+        - oss
+        subset:
+        - basic
+        - other
+        - long
+        include:
+        - version: 11.0.0
+          type: oss
+          subset: examples
+        - version: 11.0.0
+          type: tls
+          subset: basic
+        - version: 11.0.0
+          type: subpath
+          subset: basic
+        - version: 11.0.0
+          type: subpath
+          subset: other
+        - version: 11.0.0
+          type: enterprise
+          subset: enterprise
+        - version: 10.4.3
+          type: enterprise
+          subset: enterprise
+        - version: 9.5.18
+          type: enterprise
+          subset: enterprise
+        - version: 11.0.0
+          type: enterprise
+          subset: generate
+        - version: 10.4.3
+          type: enterprise
+          subset: generate
+    name: ${{ matrix.version }} - ${{ matrix.type }} - ${{ matrix.subset }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      with:
+        go-version-file: go.mod
+    - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+    - name: Get Enterprise License
+      uses: grafana/shared-workflows/actions/get-vault-secrets@main
+      if: matrix.type == 'enterprise'
+      with:
+        repo_secrets: >
+          GF_ENTERPRISE_LICENSE_TEXT=enterprise:license
+    - name: Cache Docker image
+      uses: ScribeMD/docker-cache@fb28c93772363301b8d0a6072ce850224b73f74e
+      with:
+        key: docker-${{ runner.os }}-${{ matrix.type == 'enterprise' && 'enterprise' || 'oss' }}-${{ matrix.version }}
+    - uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
+      with:
+        timeout_minutes: 30
+        max_attempts: 3
+        command: make testacc-${{ matrix.type }}-docker
+      env:
+        GRAFANA_VERSION: ${{ matrix.version }}
+        TESTARGS: ${{ matrix.subset == 'enterprise' && '-skip="TestAccGenerate" -parallel 2' || '' }} ${{ matrix.subset == 'basic' && '-run=".*_basic" -short -parallel 2' || '' }} ${{ matrix.subset == 'other' && '-skip=".*_basic" -short -parallel 2' || '' }} ${{ matrix.subset == 'long' && '-run=".*longtest" -parallel 1' || '' }} ${{ matrix.subset == 'examples' && '-run=".*Examples" -parallel 1' || '' }} ${{ matrix.subset == 'generate' && '-run="TestAccGenerate" -parallel 1' || '' }}
