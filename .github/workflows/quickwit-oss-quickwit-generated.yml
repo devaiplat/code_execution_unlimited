@@ -1,0 +1,193 @@
+name: quickwit-oss/quickwit
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  CARGO_INCREMENTAL: 0
+  QW_DISABLE_TELEMETRY: 1
+  QW_TEST_DATABASE_URL: postgres://quickwit-dev:quickwit-dev@localhost:5432/quickwit-metastore-dev
+  RUST_BACKTRACE: 1
+  RUSTDOCFLAGS: -Dwarnings -Arustdoc::private_intra_doc_links
+  RUSTFLAGS: -Dwarnings --cfg tokio_unstable
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:latest
+        ports:
+        - 5432:5432
+        env:
+          POSTGRES_USER: quickwit-dev
+          POSTGRES_PASSWORD: quickwit-dev
+          POSTGRES_DB: quickwit-metastore-dev
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Ubuntu packages
+      run: sudo apt-get -y install protobuf-compiler python3 python3-pip
+    - uses: dorny/paths-filter@v3
+      id: modified
+      with:
+        filters: >
+          rust_src:
+            - quickwit/**/*.rs
+            - quickwit/**/*.toml
+            - quickwit/**/*.proto
+            - quickwit/rest-api-tests/**
+            - .github/workflows/ci.yml
+    - name: Install rustup
+      if: steps.modified.outputs.rust_src == 'true'
+      run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain none -y
+    - name: Setup stable Rust Toolchain
+      if: steps.modified.outputs.rust_src == 'true'
+      run: rustup show
+      working-directory: ./quickwit
+    - name: Setup cache
+      uses: Swatinem/rust-cache@v2
+      if: steps.modified.outputs.rust_src == 'true'
+      with:
+        workspaces: ./quickwit -> target
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install nextest (ces) (ces)
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      uses: taiki-e/cache-cargo-install-action@v2
+      with:
+        tool: cargo-nextest
+    - name: cargo nextest (ces)
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: cargo nextest run --features=postgres --retries 1
+      working-directory: ./quickwit
+    - name: cargo build
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: cargo build --features=postgres --bin quickwit
+      working-directory: ./quickwit
+    - name: Install python packages
+      run: sudo pip3 install pyaml requests
+      if: always() && steps.modified.outputs.rust_src == 'true'
+    - name: run REST API tests (ces)
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: python3 ./run_tests.py --binary ../target/debug/quickwit
+      working-directory: ./quickwit/rest-api-tests
+  lints:
+    name: Lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dorny/paths-filter@v3
+      id: modified
+      with:
+        filters: >
+          rust_src:
+            - quickwit/**/*.rs
+            - quickwit/**/*.toml
+            - quickwit/**/*.proto
+            - .github/workflows/ci.yml
+    - name: Install Ubuntu packages
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: sudo apt-get -y install protobuf-compiler python3 python3-pip
+    - name: Install rustup
+      if: steps.modified.outputs.rust_src == 'true'
+      run: curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain none -y
+    - name: Setup nightly Rust Toolchain (for rustfmt)
+      if: steps.modified.outputs.rust_src == 'true'
+      run: rustup toolchain install nightly
+    - name: Setup stable Rust Toolchain
+      if: steps.modified.outputs.rust_src == 'true'
+      run: rustup show
+      working-directory: ./quickwit
+    - name: Setup cache
+      if: steps.modified.outputs.rust_src == 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ./quickwit -> target
+    - name: Install cargo deny
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      uses: taiki-e/cache-cargo-install-action@v2
+      with:
+        tool: cargo-deny
+    - name: cargo clippy
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: cargo clippy --workspace --tests --all-features
+      working-directory: ./quickwit
+    - name: cargo deny
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: cargo deny check licenses
+      working-directory: ./quickwit
+    - name: cargo doc
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: cargo doc
+      working-directory: ./quickwit
+    - name: License headers check
+      if: always()
+      run: bash scripts/check_license_headers.sh
+      working-directory: ./quickwit
+    - name: rustfmt
+      if: always() && steps.modified.outputs.rust_src == 'true'
+      run: cargo +nightly fmt --all -- --check
+      working-directory: ./quickwit
