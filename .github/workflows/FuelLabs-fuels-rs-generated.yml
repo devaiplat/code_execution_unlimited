@@ -1,0 +1,352 @@
+name: FuelLabs/fuels-rs
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  DASEL_VERSION: https://github.com/TomWright/dasel/releases/download/v2.3.6/dasel_linux_amd64
+  RUSTFLAGS: -D warnings
+  FUEL_CORE_VERSION: 0.36.0
+  FUEL_CORE_PATCH_BRANCH: 
+  RUST_VERSION: 1.79.0
+  FORC_VERSION: 0.63.6
+  FORC_PATCH_BRANCH: ''
+  FORC_PATCH_REVISION: ''
+  NEXTEST_HIDE_PROGRESS_BAR: true
+  NEXTEST_STATUS_LEVEL: fail
+jobs:
+  setup-test-projects:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        prefix-key: v1-rust
+    - name: Set git config
+      run: |
+        git config --global core.bigfilethreshold 100m
+    - name: Install forc and forc-fmt
+      run: |
+        if [[ -n $FORC_PATCH_BRANCH ]]; then
+          cargo install --locked forc forc-fmt --git https://github.com/FuelLabs/sway --branch $FORC_PATCH_BRANCH
+        elif [[ -n $FORC_PATCH_REVISION ]]; then
+          cargo install --locked forc forc-fmt --git https://github.com/FuelLabs/sway --rev $FORC_PATCH_REVISION
+        else
+          curl -sSLf https://github.com/FuelLabs/sway/releases/download/v${{ env.FORC_VERSION }}/forc-binaries-linux_amd64.tar.gz -L -o forc.tar.gz
+          tar -xvf forc.tar.gz
+          chmod +x forc-binaries/forc
+          mv forc-binaries/forc /usr/local/bin/forc
+          mv forc-binaries/forc-fmt /usr/local/bin/forc-fmt
+        fi
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Check format of Sway test projects (ces) (ces)
+      run: forc fmt --check --path e2e
+    - name: Build Sway test projects (ces)
+      run: forc build --release --terse --error-on-warnings --path e2e
+    - uses: actions/upload-artifact@v4
+      with:
+        retention-days: 2
+        name: sway-examples
+        path: >
+          e2e/sway/**/out/*
+  get-workspace-members:
+    runs-on: ubuntu-latest
+    outputs:
+      members: ${{ steps.set-members.outputs.members }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - id: set-members
+      run: |
+        # install dasel
+
+        curl -sSLf "$DASEL_VERSION" -L -o dasel && chmod +x dasel
+
+        mv ./dasel /usr/local/bin/dasel
+
+        members=$(cat Cargo.toml | dasel -r toml -w json 'workspace.members' | jq -r ".[]" | xargs -I '{}' dasel -f {}/Cargo.toml 'package.name' | jq -R '[.]' | jq -s -c 'add')
+
+        echo "members=$members" >> $GITHUB_OUTPUT
+  verify-rust-version:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - run: |
+        curl -sSLf "$DASEL_VERSION" -L -o dasel && chmod +x dasel
+
+        mv ./dasel /usr/local/bin/dasel
+
+        MIN_VERSION=$(cat Cargo.toml | dasel -r toml 'workspace.package.rust-version' -w plain)
+
+        RUST_VERSION="${{ env.RUST_VERSION }}"
+
+        echo "Comparing minimum supported toolchain ($MIN_VERSION) with ci toolchain (RUST_VERSION)"
+
+        test "$MIN_VERSION" == "$RUST_VERSION"
+  publish-crates-check:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+    - name: Publish crate check
+      uses: FuelLabs/publish-crates@v1
+      with:
+        dry-run: true
+        check-repo: false
+        ignore-unpublished-changes: true
+  cargo-verifications:
+    needs:
+    - setup-test-projects
+    - verify-rust-version
+    - get-workspace-members
+    - publish-crates-check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cargo_command:
+        - check
+        args:
+        - --all-features
+        package: ${{fromJSON(needs.get-workspace-members.outputs.members)}}
+        include:
+        - cargo_command: fmt
+          args: --all --verbose -- --check
+        - cargo_command: clippy
+          args: --all-targets
+          download_sway_artifacts: sway-examples
+        - cargo_command: nextest
+          args: run --all-targets --features "default fuel-core-lib coin-cache" --workspace --cargo-quiet
+          download_sway_artifacts: sway-examples
+          install_fuel_core: true
+        - cargo_command: nextest
+          args: run --all-targets --workspace --cargo-quiet
+          download_sway_artifacts: sway-examples
+          install_fuel_core: true
+        - cargo_command: test
+          args: --doc --workspace
+        - cargo_command: machete
+          args: --skip-target-dir
+        - command: test_wasm
+          args: 
+        - command: check_fuel_core_version
+          args: 
+        - command: check_doc_anchors_valid
+          args: 
+        - command: check_doc_unresolved_links
+          args: 
+        - command: check_typos
+          args: 
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+        components: clippy,rustfmt
+        targets: wasm32-unknown-unknown
+    - uses: Swatinem/rust-cache@v2.7.3
+      continue-on-error: true
+      with:
+        key: ${{ matrix.cargo_command }} ${{ matrix.args }} ${{ matrix.package }}
+    - name: Install Fuel Core
+      if: ${{ matrix.install_fuel_core }}
+      run: |
+        if [[ -n $FUEL_CORE_PATCH_BRANCH ]]; then
+          cargo install --locked fuel-core-bin --git https://github.com/FuelLabs/fuel-core --branch "$FUEL_CORE_PATCH_BRANCH"
+        else
+          curl -sSLf https://github.com/FuelLabs/fuel-core/releases/download/v${{ env.FUEL_CORE_VERSION }}/fuel-core-${{ env.FUEL_CORE_VERSION }}-x86_64-unknown-linux-gnu.tar.gz -L -o fuel-core.tar.gz
+          tar -xvf fuel-core.tar.gz
+          chmod +x fuel-core-${{ env.FUEL_CORE_VERSION }}-x86_64-unknown-linux-gnu/fuel-core
+          mv fuel-core-${{ env.FUEL_CORE_VERSION }}-x86_64-unknown-linux-gnu/fuel-core /usr/local/bin/fuel-core
+        fi
+    - name: Download sway example artifacts
+      if: ${{ matrix.download_sway_artifacts }}
+      uses: actions/download-artifact@v4
+      with:
+        name: ${{ matrix.download_sway_artifacts }}
+        path: e2e/sway/
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install nextest (ces) (ces)
+      if: ${{ matrix.cargo_command == 'nextest' }}
+      uses: taiki-e/install-action@nextest
+    - name: Install cargo-machete
+      if: ${{ matrix.cargo_command == 'machete' }}
+      uses: taiki-e/install-action@cargo-machete
+    - name: Cargo (workspace-level)
+      if: ${{ matrix.cargo_command && !matrix.package }}
+      run: cargo ${{ matrix.cargo_command }} ${{ matrix.args }}
+    - name: Cargo (package-level)
+      if: ${{ matrix.cargo_command && matrix.package }}
+      run: cargo ${{ matrix.cargo_command }} -p ${{ matrix.package }} ${{ matrix.args }}
+    - name: Install NodeJS for WASM testing (ces)
+      if: ${{ matrix.command == 'test_wasm' }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+    - name: Test WASM (ces)
+      if: ${{ matrix.command == 'test_wasm' }}
+      run: |
+        curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+        cd wasm-tests
+
+        wasm-pack test --node
+    - name: Check that fuel_core version.rs file is up to date
+      if: ${{ matrix.command == 'check_fuel_core_version' }}
+      run: cargo run --bin fuel-core-version -- --manifest-path ./Cargo.toml verify
+    - name: Check for invalid documentation anchors
+      if: ${{ matrix.command == 'check_doc_anchors_valid' }}
+      run: cargo run --bin check-docs
+    - name: Check for unresolved documentation links
+      if: ${{ matrix.command == 'check_doc_unresolved_links' }}
+      run: |
+        ! cargo doc --document-private-items |& grep -A 6  "warning: unresolved link to"
+    - name: Check for typos
+      if: ${{ matrix.command == 'check_typos' }}
+      uses: crate-ci/typos@v1.20.3
+  publish:
+    needs:
+    - cargo-verifications
+    - publish-crates-check
+    if: true
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUST_VERSION }}
+    - name: Verify tag version
+      run: |
+        curl -sSLf "$DASEL_VERSION" -L -o dasel && chmod +x dasel
+
+        mv ./dasel /usr/local/bin/dasel
+
+        ./.github/workflows/scripts/verify_tag.sh ${{ github.ref_name }} Cargo.toml
+    - name: Publish crate
+      uses: FuelLabs/publish-crates@v1
+      with:
+        publish-delay: 30000
+        registry-token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
