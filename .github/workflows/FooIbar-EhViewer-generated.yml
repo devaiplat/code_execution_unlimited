@@ -1,0 +1,167 @@
+name: FooIbar/EhViewer
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+    - name: Install Rust Toolchain
+      run: rustup update && rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android && rustup component add rustfmt clippy
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ./app/src/main/rust
+        shared-key: ${{ runner.os }}
+    - name: Rustfmt Check
+      working-directory: ./app/src/main/rust
+      run: cargo fmt --all -- --check
+    - name: Clippy Check
+      working-directory: ./app/src/main/rust
+      run: cargo clippy --target aarch64-linux-android --all-features -- -D warnings
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        cache-read-only: true
+    - name: Spotless Check
+      run: ./gradlew spotlessCheck
+    - name: Lint Check
+      run: ./gradlew lintMarshmallowRelease
+  default:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+    - name: Install Rust Toolchain
+      run: rustup update && rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android && rustup component add rustfmt clippy
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ./app/src/main/rust
+        shared-key: ${{ runner.os }}
+        save-if: false
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        cache-encryption-key: ${{ secrets.GradleEncryptionKey }}
+    - name: CMake Cache
+      uses: actions/cache@v4
+      with:
+        path: app/.cxx
+        key: cmake-default-${{ hashFiles('gradle/libs.versions.toml', 'app/build.gradle.kts', 'app/src/main/cpp/CMakeLists.txt') }}
+        restore-keys: cmake-default-
+    - name: Build
+      run: ./gradlew assembleDefaultRelease
+    - name: Upload ARM64
+      uses: actions/upload-artifact@v4
+      with:
+        name: default-arm64-v8a-${{ github.sha }}
+        path: app/build/outputs/apk/default/release/app-default-arm64-v8a-release.apk
+    - name: Upload x86_64
+      uses: actions/upload-artifact@v4
+      with:
+        name: default-x86_64-${{ github.sha }}
+        path: app/build/outputs/apk/default/release/app-default-x86_64-release.apk
+    - name: Upload ARM32
+      uses: actions/upload-artifact@v4
+      with:
+        name: default-armeabi-v7a-${{ github.sha }}
+        path: app/build/outputs/apk/default/release/app-default-armeabi-v7a-release.apk
+    - name: Upload mapping
+      uses: actions/upload-artifact@v4
+      with:
+        name: default-mapping-${{ github.sha }}
+        path: app/build/outputs/mapping/defaultRelease
+    - name: Upload native debug symbols
+      uses: actions/upload-artifact@v4
+      with:
+        name: default-native-debug-symbols-${{ github.sha }}
+        path: app/build/outputs/native-debug-symbols/defaultRelease/native-debug-symbols.zip
+  marshmallow:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+    - name: Install Rust Toolchain
+      run: rustup update && rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android && rustup component add rustfmt clippy
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ./app/src/main/rust
+        shared-key: ${{ runner.os }}
+        save-if: false
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        cache-encryption-key: ${{ secrets.GradleEncryptionKey }}
+    - name: CMake Cache
+      uses: actions/cache@v4
+      with:
+        path: app/.cxx
+        key: cmake-marshmallow-${{ hashFiles('gradle/libs.versions.toml', 'app/build.gradle.kts', 'app/src/main/cpp/CMakeLists.txt') }}
+        restore-keys: cmake-marshmallow-
+    - name: Build
+      run: ./gradlew assembleMarshmallowRelease
+    - name: Upload ARM64
+      uses: actions/upload-artifact@v4
+      with:
+        name: marshmallow-arm64-v8a-${{ github.sha }}
+        path: app/build/outputs/apk/marshmallow/release/app-marshmallow-arm64-v8a-release.apk
+    - name: Upload x86_64
+      uses: actions/upload-artifact@v4
+      with:
+        name: marshmallow-x86_64-${{ github.sha }}
+        path: app/build/outputs/apk/marshmallow/release/app-marshmallow-x86_64-release.apk
+    - name: Upload ARM32
+      uses: actions/upload-artifact@v4
+      with:
+        name: marshmallow-armeabi-v7a-${{ github.sha }}
+        path: app/build/outputs/apk/marshmallow/release/app-marshmallow-armeabi-v7a-release.apk
+    - name: Upload mapping
+      uses: actions/upload-artifact@v4
+      with:
+        name: marshmallow-mapping-${{ github.sha }}
+        path: app/build/outputs/mapping/marshmallowRelease
+    - name: Upload native debug symbols
+      uses: actions/upload-artifact@v4
+      with:
+        name: marshmallow-native-debug-symbols-${{ github.sha }}
+        path: app/build/outputs/native-debug-symbols/marshmallowRelease/native-debug-symbols.zip
