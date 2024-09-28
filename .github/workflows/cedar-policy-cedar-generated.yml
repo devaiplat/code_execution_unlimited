@@ -1,0 +1,156 @@
+name: cedar-policy/cedar
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build_and_test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+        - stable
+    env:
+      RUSTFLAGS: -D warnings -F unsafe-code
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+    - run: ./panic_safety.sh
+    - run: cargo doc --all-features --no-deps
+    - run: cargo build --verbose
+    - run: cargo test --verbose
+    - run: cargo test --verbose --benches
+    - run: cargo test --verbose --no-default-features
+    - run: cargo build --verbose --features "experimental"
+    - run: cargo test --verbose --features "experimental"
+    - run: cargo audit --deny warnings
+  clippy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+        - stable
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+    - run: cargo clippy --all-features
+  format:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+        - stable
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - run: rustup update ${{ matrix.toolchain }} && rustup default ${{ matrix.toolchain }}
+    - run: cargo fmt --all --check
+  cargo-deny:
+    name: cargo deny
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: EmbarkStudios/cargo-deny-action@v1
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: taiki-e/install-action@cargo-hack
+    - run: cargo hack check --rust-version --workspace --all-targets --ignore-private
+  wasm-build:
+    name: run wasm build script
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - macos-latest-large
+        - macos-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: -D warnings -F unsafe-code
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: update llvm (macOS)
+      if: ${{ matrix.os  == 'macos-latest-large' }}
+      run: brew install llvm && echo "/usr/local/opt/llvm/bin" >> $GITHUB_PATH
+    - name: update llvm (macOSarm64)
+      if: ${{ matrix.os  == 'macos-latest' }}
+      run: brew install llvm && echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
+    - name: install typescript
+      if: ${{ matrix.os  != 'ubuntu-latest' }}
+      run: npm install -g typescript
+    - name: install wasm-pack
+      run: cargo install wasm-pack
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: build wasm and test build (ces) (ces)
+      run: cd ./cedar-wasm && TEST_TS=1 ./build-wasm.sh
