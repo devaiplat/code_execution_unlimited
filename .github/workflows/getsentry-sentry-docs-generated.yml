@@ -1,0 +1,116 @@
+name: getsentry/sentry-docs
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  job_lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4.1.1
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Internal github app token
+      id: token
+      uses: getsentry/action-github-app-token@97c9e23528286821f97fba885c1b1123284b29cc
+      continue-on-error: true
+      with:
+        app_id: ${{ vars.SENTRY_INTERNAL_APP_ID }}
+        private_key: ${{ secrets.SENTRY_INTERNAL_APP_PRIVATE_KEY }}
+    - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b
+      id: setup-node
+      with:
+        node-version-file: package.json
+    - uses: actions/cache@v4
+      id: cache
+      with:
+        path: ${{ github.workspace }}/node_modules
+        key: node-${{ runner.os }}-${{ hashFiles('**/yarn.lock') }}
+    - run: yarn install --frozen-lockfile
+      if: steps.cache.outputs.cache-hit != 'true'
+    - run: yarn lint:ts
+    - run: yarn lint:docs
+    - run: yarn lint:prettier:fix
+    - run: yarn lint:eslint:fix
+    - name: Check for dirty git working tree (forks)
+      if: steps.token.outcome != 'success' && github.ref != 'refs/heads/master'
+      run: |
+        git diff --quiet || (echo '::error ::lint produced file changes, run linter locally and try again' && exit 1)
+    - name: Commit any eslint fixed files
+      if: steps.token.outcome == 'success' && github.ref != 'refs/heads/master'
+      uses: getsentry/action-github-commit@5972d5f578ad77306063449e718c0c2a6fbc4ae1
+      with:
+        github-token: ${{ steps.token.outputs.token }}
+  job_test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4.1.1
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: getsentry/action-setup-volta@c52be2ea13cfdc084edb806e81958c13e445941e
+    - uses: actions/cache@v4
+      id: cache
+      with:
+        path: ${{ github.workspace }}/node_modules
+        key: node-${{ runner.os }}-${{ hashFiles('**/yarn.lock') }}
+    - run: yarn install --frozen-lockfile
+      if: steps.cache.outputs.cache-hit != 'true'
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Tests (ces) (ces)
+      run: true
