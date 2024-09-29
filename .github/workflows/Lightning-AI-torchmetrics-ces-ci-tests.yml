@@ -1,0 +1,282 @@
+name: Lightning-AI/torchmetrics
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref }}
+  cancel-in-progress: ${{ ! (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release/')) }}
+defaults:
+  run:
+    shell: bash
+jobs:
+  check-diff:
+    if: true
+    uses: ./.github/workflows/_focus-diff.yml
+  pytester:
+    runs-on: ${{ matrix.os }}
+    needs: check-diff
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-20.04
+        python-version:
+        - 3.9
+        pytorch-version:
+        - 1.10.2
+        - 1.11.0
+        - 1.12.1
+        - 1.13.1
+        - 2.0.1
+        - 2.1.2
+        - 2.2.2
+        - 2.3.1
+        - 2.4.0
+        include:
+        - os: ubuntu-22.04
+          python-version: 3.8
+          pytorch-version: 1.13.1
+        - os: ubuntu-22.04
+          python-version: 3.10
+          pytorch-version: 2.0.1
+        - os: ubuntu-22.04
+          python-version: 3.10
+          pytorch-version: 2.2.2
+        - os: ubuntu-22.04
+          python-version: 3.11
+          pytorch-version: 2.3.1
+        - os: macOS-13
+          python-version: 3.8
+          pytorch-version: 1.13.1
+        - os: macOS-13
+          python-version: 3.10
+          pytorch-version: 2.0.1
+        - os: macOS-14
+          python-version: 3.10
+          pytorch-version: 2.0.1
+        - os: macOS-14
+          python-version: 3.11
+          pytorch-version: 2.4.0
+        - os: windows-2022
+          python-version: 3.8
+          pytorch-version: 1.13.1
+        - os: windows-2022
+          python-version: 3.10
+          pytorch-version: 2.0.1
+        - os: windows-2022
+          python-version: 3.11
+          pytorch-version: 2.4.0
+    env:
+      FREEZE_REQUIREMENTS: ${{ ! (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/release/')) }}
+      PYPI_CACHE_DIR: _ci-cache_PyPI
+      TOKENIZERS_PARALLELISM: false
+      TEST_DIRS: ${{ needs.check-diff.outputs.test-dirs }}
+      PIP_EXTRA_INDEX_URL: --find-links https://download.pytorch.org/whl/cpu/torch_stable.html
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Setup macOS
+      if: ${{ runner.os == 'macOS' }}
+      run: |
+        echo 'UNITTEST_TIMEOUT=--timeout=75' >> $GITHUB_ENV
+
+        brew install mecab # https://github.com/coqui-ai/TTS/issues/1533#issuecomment-1338662303
+
+        brew install gcc libomp ffmpeg # https://github.com/pytorch/pytorch/issues/20030
+    - name: Setup Linux
+      if: ${{ runner.os == 'Linux' }}
+      run: |
+        echo 'UNITTEST_TIMEOUT=--timeout=75' >> $GITHUB_ENV
+
+        sudo apt update --fix-missing
+
+        sudo apt install -y ffmpeg
+    - name: Setup Windows
+      if: ${{ runner.os == 'windows' }}
+      run: choco install ffmpeg
+    - name: source cashing
+      uses: ./.github/actions/pull-caches
+      with:
+        requires: ${{ matrix.requires }}
+        pytorch-version: ${{ matrix.pytorch-version }}
+        pypi-dir: ${{ env.PYPI_CACHE_DIR }}
+    - name: Install pkg
+      timeout-minutes: 25
+      run: |
+        pip --version
+
+        pip install -e . -U "setuptools==69.5.1" -r requirements/_doctest.txt \
+          $PIP_EXTRA_INDEX_URL --find-links $PYPI_CACHE_DIR
+        pip list
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: DocTests (ces) (ces)
+      timeout-minutes: 25
+      working-directory: ./src
+      env:
+        SKIP_SLOW_DOCTEST: 1
+      run: python -m pytest torchmetrics --reruns 3 --reruns-delay 2
+    - name: Install all dependencies
+      run: |
+        curl https://raw.githubusercontent.com/Lightning-AI/utilities/main/scripts/adjust-torch-versions.py -o adjust-torch-versions.py
+
+        pip install -q cython  # needed for installing `pycocotools` in latest config
+
+        for fpath in `ls requirements/*.txt`; do
+            python adjust-torch-versions.py $fpath
+        done
+
+        pip install --requirement requirements/_devel.txt -U \
+          $PIP_EXTRA_INDEX_URL --find-links $PYPI_CACHE_DIR
+        pip list
+    - name: set special vars for PR
+      if: ${{ github.event_name == 'pull_request' }}
+      run: |
+        echo 'ALLOW_SKIP_IF_OUT_OF_MEMORY=1' >> $GITHUB_ENV
+
+        echo 'ALLOW_SKIP_IF_BAD_CONNECTION=1' >> $GITHUB_ENV
+    - name: Sanity check
+      id: info
+      run: |
+        python -c "from torch import __version__ as ver; ver = ver.split('+')[0] ; assert ver == '${{ matrix.pytorch-version }}', ver"
+
+        python -c 'import torch ; print("TORCH=" + str(torch.__version__))' >> $GITHUB_OUTPUT
+    - name: Pull testing data from S3 (ces)
+      working-directory: ./tests
+      env:
+        S3_DATA: https://pl-public-data.s3.amazonaws.com/metrics/data.zip
+      run: |
+        pip install -q "urllib3>1.0"
+
+        # wget is simpler but does not work on Windows
+
+        python -c "from urllib.request import urlretrieve ; urlretrieve('$S3_DATA', 'data.zip')"
+
+        unzip -o data.zip
+
+        ls -l _data/*
+    - name: Export README tests (ces)
+      run: python -m phmdoctest README.md --outfile tests/unittests/test_readme.py
+    - name: Unittests common (ces)
+      if: ${{ env.TEST_DIRS != '' }}
+      working-directory: ./tests
+      run: |
+        python -m pytest \
+          $TEST_DIRS \
+          --cov=torchmetrics \
+          --durations=50 \
+          --reruns 3 \
+          --reruns-delay 1 \
+          -m "not DDP" \
+          -n auto \
+          --dist=load \
+          ${{ env.UNITTEST_TIMEOUT }}
+    - name: Unittests DDP (ces)
+      if: ${{ env.TEST_DIRS != '' }}
+      working-directory: ./tests
+      env:
+        USE_PYTEST_POOL: 1
+      run: |
+        python -m pytest -v \
+          $TEST_DIRS \
+          --cov=torchmetrics \
+          --durations=50 \
+          -m DDP \
+          --reruns 3 \
+          --reruns-delay 1 \
+          ${{ env.UNITTEST_TIMEOUT }}
+    - name: Statistics
+      if: ${{ env.TEST_DIRS != '' }}
+      working-directory: ./tests
+      run: |
+        coverage xml
+
+        coverage report
+    - name: Upload coverage to Codecov
+      if: ${{ env.TEST_DIRS != '' }}
+      uses: codecov/codecov-action@v4
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: tests/coverage.xml
+        flags: cpu,${{ runner.os }},python${{ matrix.python-version }},torch${{ steps.info.outputs.TORCH }}
+        env_vars: OS,PYTHON
+        name: codecov-umbrella
+        fail_ci_if_error: false
+    - name: update cashing
+      if: github.event_name != 'pull_request'
+      continue-on-error: true
+      uses: ./.github/actions/push-caches
+      with:
+        pypi-dir: ${{ env.PYPI_CACHE_DIR }}
+  testing-guardian:
+    runs-on: ubuntu-latest
+    needs: pytester
+    if: true
+    steps:
+    - run: echo "${{ needs.pytester.result }}"
+    - name: failing...
+      if: needs.pytester.result == 'failure'
+      run: exit 1
+    - name: cancelled or skipped...
+      if: contains(fromJSON('["cancelled", "skipped"]'), needs.pytester.result)
+      timeout-minutes: 1
+      run: sleep 90
