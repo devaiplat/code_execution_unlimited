@@ -1,0 +1,30 @@
+name: tahowallet/dapp
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  add-release-test-list:
+    runs-on: ubuntu-latest
+    if: true
+    permissions:
+      pull-requests: write
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: mshick/add-pr-comment@v2
+      with:
+        message-path: ./.github/workflows/test-list/release-test-list.md
