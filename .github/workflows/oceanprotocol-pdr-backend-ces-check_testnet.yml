@@ -1,0 +1,53 @@
+name: oceanprotocol/pdr-backend
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.11
+    - name: Fetch the address file and move it to contracts directory
+      run: |
+        wget https://raw.githubusercontent.com/oceanprotocol/contracts/main/addresses/address.json
+
+        mkdir -p ~/.ocean/ocean-contracts/artifacts/
+
+        mv address.json ~/.ocean/ocean-contracts/artifacts/
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+
+        pip install -r requirements.txt
+    - name: Notify Slack
+      run: |
+        output=$(python pdr check_network ppss.yaml sapphire-testnet | grep -E 'FAIL|WARNING|error' | grep -v "1h" || true)
+
+        joke=$(curl -s https://official-joke-api.appspot.com/jokes/general/random | jq -r '.[0].setup, .[0].punchline')
+
+        if [ -z "$output" ]; then
+          echo "No output, so no message will be sent to Slack"
+        else
+          message="Testnet Check script failed: \n${output}\n\nHere's a funny joke to make your day: ${joke}"
+          curl -X POST -H 'Content-type: application/json' --data '{"text":"'"$message"'"}' ${{ secrets.SLACK_WEBHOOK_URL }}
+        fi
