@@ -1,0 +1,570 @@
+name: UnitTestBot/UTBotJava
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: utbot_java_cli
+  DOCKERFILE_PATH: docker/Dockerfile_java_cli
+  PUSHGATEWAY_HOSTNAME: monitoring.utbot.org
+  ELK_HOSTNAME: logs.utbot.org
+  FILEBEAT_DIR: /tmp/filebeat
+jobs:
+  prepare-matrices:
+    runs-on: ubuntu-latest
+    outputs:
+      framework-tests-matrix: ${{ steps.set-matrices.outputs.framework-tests-matrix }}
+      combined-projects-matrix: ${{ steps.set-matrices.outputs.combined-projects-matrix }}
+    steps:
+    - name: Print environment variables
+      run: printenv
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Check out ${{ github.event.inputs.commit_sha }} commit
+      if: github.event.inputs.commit_sha != ''
+      run: |
+        git config --global --add safe.directory ${GITHUB_WORKSPACE}
+
+        git fetch
+
+        git checkout ${{ github.event.inputs.commit_sha }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - id: set-matrices
+      name: Read and print config from framework-tests-matrix.json and combined-projects-matrix.json (ces) (ces)
+      run: |
+        FRAMEWORK_TESTS=$(echo $(cat .github/workflows/framework-tests-matrix.json))
+
+        COMBINED_PROJECTS=$(echo $(cat .github/workflows/combined-projects-matrix.json))
+
+        echo "framework-tests-matrix=$FRAMEWORK_TESTS" >> $GITHUB_OUTPUT
+
+        echo "combined-projects-matrix=$COMBINED_PROJECTS" >> $GITHUB_OUTPUT
+
+        echo $FRAMEWORK_TESTS
+
+        echo $COMBINED_PROJECTS
+  framework-tests:
+    needs: prepare-matrices
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrices.outputs.framework-tests-matrix) }}
+    runs-on: ubuntu-20.04
+    container:
+      image: unittestbot/java-env:java17-zulu-jdk-gradle7.6.1-kotlinc1.8.0
+      volumes:
+      - /home/runner/runners:/home/runner/runners
+      - /tmp/filebeat:/tmp/filebeat
+    steps:
+    - name: Print environment variables
+      run: printenv
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Check out ${{ github.event.inputs.commit_sha }} commit
+      if: github.event.inputs.commit_sha != ''
+      run: |
+        git config --global --add safe.directory ${GITHUB_WORKSPACE}
+
+        git fetch
+
+        git checkout ${{ github.event.inputs.commit_sha }}
+    - name: Run monitoring
+      continue-on-error: true
+      run: |
+        chmod +x ./scripts/project/monitoring.sh
+
+        ./scripts/project/monitoring.sh "${PUSHGATEWAY_HOSTNAME}" "${{ secrets.PUSHGATEWAY_USER }}" "${{ secrets.PUSHGATEWAY_PASSWORD }}"
+
+        echo "Please visit Grafana to check metrics: https://${PUSHGATEWAY_HOSTNAME}/d/rYdddlPWk/node-exporter-full?orgId=1&from=now-1h&to=now&var-service=github&var-instance=${GITHUB_RUN_ID}-${HOSTNAME}&refresh=1m"
+
+        echo ---
+
+        printf ${{ secrets.CA_CERT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/ca.crt
+
+        printf ${{ secrets.CLIENT_CRT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.crt
+
+        printf ${{ secrets.CLIENT_KEY }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.key
+
+        chmod +x ./scripts/project/logging.sh 
+
+        ./scripts/project/logging.sh "${FILEBEAT_DIR}" "${{ secrets.ELK_HOST }}:5044"
+
+        echo "Please visit ELK to check logs https://logs.utbot.org/app/discover#/ using the following search pattern: github.env.HOSTNAME:\"${HOSTNAME}\" and github.env.GITHUB_RUN_ID:\"${GITHUB_RUN_ID}\" and not github.log_level:\"INFO\""
+    - uses: actions/cache@v3
+      with:
+        path: /root/.gradle/caches
+        key: ${{ runner.os }}-gradle-framework-${{ hashFiles('./*.gradle*', './utbot-framework*/*.gradle*') }}
+        restore-keys: ${{ runner.os }}-gradle-framework
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: |
+        gradle --no-daemon --build-cache --no-parallel -PprojectType=Ultimate -PgithubActor=${{ github.actor }} -PgithubToken=${{ secrets.PACKAGES_RO_TOKEN }} -Dorg.gradle.jvmargs=-Xmx6g -Dkotlin.daemon.jvm.options=-Xmx4g :utbot-framework-test:test ${{ matrix.project.TESTS_TO_RUN }}
+    - name: Upload logs
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: logs ${{ matrix.project.PART_NAME }}
+        path: utbot-framework-test/logs/*
+    - name: Upload UTBot temp directory content
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: utbot_temp ${{ matrix.project.PART_NAME }}
+        path: >
+          /tmp/UTBot/generated*/*
+
+          /tmp/UTBot/utbot-instrumentedprocess-errors/*
+    - name: Upload test report if tests have failed (ces)
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: test_report ${{ matrix.project.PART_NAME }}
+        path: utbot-framework-test/build/reports/tests/test/*
+  spring-tests:
+    runs-on: ubuntu-20.04
+    container:
+      image: unittestbot/java-env:java17-zulu-jdk-gradle7.6.1-kotlinc1.8.0
+      volumes:
+      - /home/runner/runners:/home/runner/runners
+      - /tmp/filebeat:/tmp/filebeat
+    steps:
+    - name: Print environment variables
+      run: printenv
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Check out ${{ github.event.inputs.commit_sha }} commit
+      if: github.event.inputs.commit_sha != ''
+      run: |
+        git config --global --add safe.directory ${GITHUB_WORKSPACE}
+
+        git fetch
+
+        git checkout ${{ github.event.inputs.commit_sha }}
+    - name: Run monitoring
+      continue-on-error: true
+      run: |
+        chmod +x ./scripts/project/monitoring.sh
+
+        ./scripts/project/monitoring.sh "${PUSHGATEWAY_HOSTNAME}" "${{ secrets.PUSHGATEWAY_USER }}" "${{ secrets.PUSHGATEWAY_PASSWORD }}"
+
+        echo "Please visit Grafana to check metrics: https://${PUSHGATEWAY_HOSTNAME}/d/rYdddlPWk/node-exporter-full?orgId=1&from=now-1h&to=now&var-service=github&var-instance=${GITHUB_RUN_ID}-${HOSTNAME}&refresh=1m"
+
+        echo ---
+
+        printf ${{ secrets.CA_CERT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/ca.crt
+
+        printf ${{ secrets.CLIENT_CRT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.crt
+
+        printf ${{ secrets.CLIENT_KEY }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.key
+
+        chmod +x ./scripts/project/logging.sh
+
+        ./scripts/project/logging.sh "${FILEBEAT_DIR}" "${{ secrets.ELK_HOST }}:5044"
+
+        echo "Please visit ELK to check logs https://logs.utbot.org/app/discover#/ using the following search pattern: github.env.HOSTNAME:\"${HOSTNAME}\" and github.env.GITHUB_RUN_ID:\"${GITHUB_RUN_ID}\" and not github.log_level:\"INFO\""
+    - uses: actions/cache@v3
+      with:
+        path: /root/.gradle/caches
+        key: ${{ runner.os }}-gradle-spring-${{ hashFiles('./*.gradle*', './utbot-spring*/*.gradle*') }}
+        restore-keys: ${{ runner.os }}-gradle-spring
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: |
+        cd utbot-spring-test
+
+        gradle --no-daemon --build-cache --no-parallel -PprojectType=Community -PgithubActor=${{ github.actor }} -PgithubToken=${{ secrets.PACKAGES_RO_TOKEN }} -Dorg.gradle.jvmargs=-Xmx6g -Dkotlin.daemon.jvm.options=-Xmx4g :utbot-spring-test:test
+    - name: Upload logs
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: logs utbot-spring-test
+        path: utbot-spring-test/logs/*
+    - name: Upload UTBot temp directory content
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: utbot_temp utbot-spring-test
+        path: >
+          /tmp/UTBot/generated*/*
+
+          /tmp/UTBot/utbot-instrumentedprocess-errors/*
+    - name: Upload test report if tests have failed (ces)
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: test_report utbot-spring-test
+        path: utbot-spring-test/build/reports/tests/test/*
+  combined-projects:
+    needs: prepare-matrices
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrices.outputs.combined-projects-matrix) }}
+    runs-on: ubuntu-20.04
+    container:
+      image: unittestbot/java-env:java17-zulu-jdk-gradle7.6.1-kotlinc1.8.0
+      volumes:
+      - /home/runner/runners:/home/runner/runners
+      - /tmp/filebeat:/tmp/filebeat
+    steps:
+    - name: Print environment variables
+      run: printenv
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Check out ${{ github.event.inputs.commit_sha }} commit
+      if: github.event.inputs.commit_sha != ''
+      run: |
+        git config --global --add safe.directory ${GITHUB_WORKSPACE}
+
+        git fetch
+
+        git checkout ${{ github.event.inputs.commit_sha }}
+    - name: Run monitoring
+      run: |
+        chmod +x ./scripts/project/monitoring.sh
+
+        ./scripts/project/monitoring.sh "${PUSHGATEWAY_HOSTNAME}" "${{ secrets.PUSHGATEWAY_USER }}" "${{ secrets.PUSHGATEWAY_PASSWORD }}"
+
+        echo "Please visit Grafana to check metrics: https://${PUSHGATEWAY_HOSTNAME}/d/rYdddlPWk/node-exporter-full?orgId=1&from=now-1h&to=now&var-service=github&var-instance=${GITHUB_RUN_ID}-${HOSTNAME}&refresh=1m"
+
+        echo ---
+
+        printf ${{ secrets.CA_CERT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/ca.crt
+
+        printf ${{ secrets.CLIENT_CRT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.crt
+
+        printf ${{ secrets.CLIENT_KEY }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.key
+
+        chmod +x ./scripts/project/logging.sh
+
+        ./scripts/project/logging.sh "${FILEBEAT_DIR}" "${{ secrets.ELK_HOST }}:5044"
+
+        echo "Please visit ELK to check logs https://logs.utbot.org/app/discover#/ using the following search pattern: github.env.HOSTNAME:\"${HOSTNAME}\" and github.env.GITHUB_RUN_ID:\"${GITHUB_RUN_ID}\" and not github.log_level:\"INFO\""
+    - uses: actions/cache@v3
+      with:
+        path: /root/.gradle/caches
+        key: ${{ runner.os }}-gradle-combined-${{ hashFiles('./*.gradle*', './*/.gradle*') }}
+        restore-keys: ${{ runner.os }}-gradle-combined-
+    - name: Build project ${{ matrix.projects.first }}
+      id: first-project
+      run: |
+        cd ${{ matrix.projects.first }}
+
+        gradle build --no-daemon --build-cache --no-parallel -PgithubActor=${{ github.actor }} -PgithubToken=${{ secrets.PACKAGES_RO_TOKEN }} -Dorg.gradle.jvmargs=-Xmx6g -Dkotlin.daemon.jvm.options=-Xmx4g
+    - name: Build project ${{ matrix.projects.second }}
+      if: ${{ steps.first-project.outcome != 'cancelled' && steps.first-project.outcome != 'skipped' }}
+      run: |
+        cd ${{ matrix.projects.second }}
+
+        gradle build --no-daemon --build-cache --no-parallel -PgithubActor=${{ github.actor }} -PgithubToken=${{ secrets.PACKAGES_RO_TOKEN }} -Dorg.gradle.jvmargs=-Xmx6g -Dkotlin.daemon.jvm.options=-Xmx4g
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Upload test report if tests have failed (ces) (ces)
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: test_report ${{ matrix.projects.first }}
+        path: ${{ matrix.projects.first }}/build/reports/tests/test/*
+    - name: Upload test report if tests have failed (ces)
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: test_report ${{ matrix.projects.second }}
+        path: ${{ matrix.projects.second }}/build/reports/tests/test/*
+  single-project:
+    needs: prepare-matrices
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+        - utbot-core
+        - utbot-java-fuzzing
+        - utbot-gradle
+        - utbot-junit-contest
+        - utbot-sample
+    runs-on: ubuntu-20.04
+    container:
+      image: unittestbot/java-env:java17-zulu-jdk-gradle7.6.1-kotlinc1.8.0
+      volumes:
+      - /home/runner/runners:/home/runner/runners
+      - /tmp/filebeat:/tmp/filebeat
+    steps:
+    - name: Print environment variables
+      run: printenv
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Check out ${{ github.event.inputs.commit_sha }} commit
+      if: github.event.inputs.commit_sha != ''
+      run: |
+        git config --global --add safe.directory ${GITHUB_WORKSPACE}
+
+        git fetch
+
+        git checkout ${{ github.event.inputs.commit_sha }}
+    - name: Run monitoring
+      run: |
+        chmod +x ./scripts/project/monitoring.sh
+
+        ./scripts/project/monitoring.sh "${PUSHGATEWAY_HOSTNAME}" "${{ secrets.PUSHGATEWAY_USER }}" "${{ secrets.PUSHGATEWAY_PASSWORD }}"
+
+        echo "Please visit Grafana to check metrics: https://${PUSHGATEWAY_HOSTNAME}/d/rYdddlPWk/node-exporter-full?orgId=1&from=now-1h&to=now&var-service=github&var-instance=${GITHUB_RUN_ID}-${HOSTNAME}&refresh=1m"
+
+        echo ---
+
+        printf ${{ secrets.CA_CERT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/ca.crt
+
+        printf ${{ secrets.CLIENT_CRT }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.crt
+
+        printf ${{ secrets.CLIENT_KEY }} | base64 -d > ${{ env.FILEBEAT_DIR }}/client.key
+
+        chmod +x ./scripts/project/logging.sh
+
+        ./scripts/project/logging.sh "${FILEBEAT_DIR}" "${{ secrets.ELK_HOST }}:5044"
+
+        echo "Please visit ELK to check logs https://logs.utbot.org/app/discover#/ using the following search pattern: github.env.HOSTNAME:\"${HOSTNAME}\" and github.env.GITHUB_RUN_ID:\"${GITHUB_RUN_ID}\" and not github.log_level:\"INFO\""
+    - uses: actions/cache@v3
+      with:
+        path: /root/.gradle/caches
+        key: ${{ runner.os }}-gradle-${{ matrix.project }}-${{ hashFiles('./*.gradle*', format('{0}{1}{2}', './', matrix.project, '/*.gradle*')) }}
+        restore-keys: ${{ runner.os }}-gradle-${{ matrix.project }}-
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: |
+        cd ${{ matrix.project }}
+
+        gradle build --no-daemon --build-cache --no-parallel -PgithubActor=${{ github.actor }} -PgithubToken=${{ secrets.PACKAGES_RO_TOKEN }} -Dorg.gradle.jvmargs=-Xmx6g -Dkotlin.daemon.jvm.options=-Xmx4g
+    - name: Upload test report if tests have failed (ces)
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v3
+      with:
+        name: test_report ${{ matrix.project }}
+        path: ${{ matrix.project }}/build/reports/tests/test/*
