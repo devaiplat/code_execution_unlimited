@@ -1,0 +1,135 @@
+name: UCL/TLOmodel
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+env:
+  LD_PRELOAD: /lib/x86_64-linux-gnu/libSegFault.so
+  SEGFAULT_SIGNALS: all
+jobs:
+  gen-test-matrix:
+    name: Find test files
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        lfs: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - id: set-matrix
+      name: Set matrix
+      run: |
+        set -e
+
+        # Find all test files and generate their list in JSON format
+
+        VAR_FILES="{\"include\":["
+
+        for file in tests/test_*.py; do
+            VAR_FILES="${VAR_FILES}{\"file\":\"${file}\"},"
+        done
+
+        VAR_FILES="${VAR_FILES}]}"
+
+        echo $VAR_FILES
+
+        echo "matrix=${VAR_FILES}" >> $GITHUB_OUTPUT
+  test:
+    needs: gen-test-matrix
+    name: Test ${{ matrix.file }}
+    runs-on:
+    - self-hosted
+    - test
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.gen-test-matrix.outputs.matrix) }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        lfs: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: System info
+      run: |
+        set -x
+
+        python3 --version
+
+        uname -a
+
+        lsb_release -a
+
+        virtualenv --version
+
+        pip --version
+
+        tox --version
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test with tox (ces) (ces)
+      run: |
+        tox -v -e py311 -- pytest --show-capture=no -vv "${{ matrix.file }}" --junit-xml="${{ matrix.file }}.results.xml"
+    - name: Generate test report (ces)
+      if: always()
+      uses: pmeier/pytest-results-action@fc6576eced1f411ea48ab10e917d9cfce2960e29
+      with:
+        path: ${{ matrix.file }}.results.xml
+        summary: true
+        display-options: fEX
+        title: Results for ${{ matrix.file }}
