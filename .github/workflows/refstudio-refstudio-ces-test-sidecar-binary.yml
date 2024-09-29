@@ -1,0 +1,42 @@
+name: refstudio/refstudio
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test-binary:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+        - name: macOS
+          runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./.github/actions/setup-python
+    - uses: ./.github/actions/setup-node
+    - name: Create binary
+      run: |
+        yarn python
+    - name: Start server and verify
+      run: |
+        ./src-tauri/bin/python/main/main serve &
+
+        sleep 30
+
+        curl -s http://0.0.0.0:1487/api/meta/status
