@@ -1,0 +1,58 @@
+name: jiphyeonjeon-42/backend
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  test:
+    name: Test PR
+    runs-on: ubuntu-latest
+    environment: development
+    steps:
+    - uses: reviewdog/action-setup@v1
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18.x
+    - uses: pnpm/action-setup@v2
+      name: Install pnpm
+      with:
+        version: 8
+        run_install: false
+    - name: Get pnpm store directory
+      shell: bash
+      run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+    - uses: actions/cache@v3
+      name: Setup pnpm cache
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: ${{ runner.os }}-pnpm-store-
+    - name: install dependencies
+      run: |
+        pnpm install --frozen-lockfile
+
+        pnpm --filter='@jiphyeonjeon-42/contracts' build
+    - name: check types
+      if: always()
+      run: |
+        pnpm -r --no-bail --parallel run check | sed -r 's|(.*)( check: )(.*)|\1/\3|'
