@@ -1,0 +1,21 @@
+name: FlowFuse/node-red-dashboard
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    uses: flowfuse/github-actions-workflows/.github/workflows/build_node_package.yml@v0.29.0
+    with:
+      node: '[ {"version": "18", "tests": true, "lint": true}, ]'
