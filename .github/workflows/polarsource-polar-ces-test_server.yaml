@@ -1,0 +1,198 @@
+name: polarsource/polar
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  linters:
+    name: "Server: Linters \U0001F4DD"
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+        - 3.12
+        poetry-version:
+        - 1.6.1
+        os:
+        - ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install poetry
+      run: pipx install poetry
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: poetry
+    - name: "\U0001F527 poetry install"
+      working-directory: ./server
+      run: poetry install --no-root
+    - uses: actions/cache@v4
+      with:
+        path: >
+          server/.mypy_cache
+        key: mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ matrix.poetry-version }}-${{ github.sha }}
+        restore-keys: >
+          mypy-${{ runner.os }}-${{ matrix.python-version }}-${{ matrix.poetry-version }}-
+
+          mypy-${{ runner.os }}-${{ matrix.python-version }}-
+
+          mypy-${{ runner.os }}-
+
+          mypy-
+    - name: "\U0001F436 Lint Server (ruff)"
+      working-directory: ./server
+      run: poetry run task lint_check
+    - name: "\U0001F6DF Type Check Server (mypy)"
+      working-directory: ./server
+      run: poetry run task lint_types
+  test:
+    name: "Server: Tests \U0001F40D"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+        - 3.12
+        poetry-version:
+        - 1.6.1
+        os:
+        - ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:15.1-bullseye
+        env:
+          POSTGRES_USER: polar
+          POSTGRES_PASSWORD: polar
+          POSTGRES_DB: polar_test
+          POSTGRES_PORT: 5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+        ports:
+        - 5432:5432
+      redis:
+        image: redislabs/redismod
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+        ports:
+        - 6379:6379
+      minio:
+        image: bitnami/minio:2024.5.28
+        ports:
+        - 9000:9000
+        - 9001:9001
+        env:
+          MINIO_ROOT_USER: polar
+          MINIO_ROOT_PASSWORD: polarpolar
+        options: --health-cmd "curl -I http://127.0.0.1:9000/minio/health/live" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: "\U0001F4BF MinIO Setup"
+      working-directory: ./server/.minio
+      env:
+        MINIO_HOST: 127.0.0.1
+        MINIO_ROOT_USER: polar
+        MINIO_ROOT_PASSWORD: polarpolar
+        ACCESS_KEY: polar-development
+        SECRET_ACCESS_KEY: polar123456789
+        BUCKET_NAME: polar-s3
+        BUCKET_TESTING_NAME: testing-polar-s3
+        POLICY_FILE: policy.json
+      run: bash github.sh
+    - name: Install poetry
+      run: pipx install poetry
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: poetry
+    - name: "\U0001F527 poetry install"
+      working-directory: ./server
+      run: |
+        poetry install --no-root
+
+        poetry run task generate_dev_jwks
+    - uses: actions/cache@v4
+      with:
+        path: >
+          server/.pytest_cache
+        key: pytest-${{ runner.os }}-${{ matrix.python-version }}-${{ matrix.poetry-version }}-${{ github.sha }}
+        restore-keys: >
+          pytest-${{ runner.os }}-${{ matrix.python-version }}-${{ matrix.poetry-version }}-
+
+          pytest-${{ runner.os }}-${{ matrix.python-version }}-
+
+          pytest-${{ runner.os }}-
+
+          pytest-
+    - name: ⚗️ alembic migrate
+      working-directory: ./server
+      env:
+        POLAR_ENV: testing
+      run: poetry run task db_migrate
+    - name: ⚗️ alembic check
+      working-directory: ./server
+      env:
+        POLAR_ENV: testing
+      run: poetry run alembic check
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: "\U0001F40D Run tests (pytest) (ces) (ces)"
+      working-directory: ./server
+      run: poetry run pytest
