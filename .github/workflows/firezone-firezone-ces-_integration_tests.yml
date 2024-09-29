@@ -1,0 +1,129 @@
+name: firezone/firezone
+run-name: Triggered from ${{ github.event_name }} by ${{ github.actor }}
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  integration-tests:
+    name: ${{ matrix.test.name }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      DOMAIN_IMAGE: ${{ inputs.domain_image }}
+      DOMAIN_TAG: ${{ inputs.domain_tag }}
+      API_IMAGE: ${{ inputs.api_image }}
+      API_TAG: ${{ inputs.api_tag }}
+      WEB_IMAGE: ${{ inputs.web_image }}
+      WEB_TAG: ${{ inputs.web_tag }}
+      RELAY_IMAGE: ${{ inputs.relay_image }}
+      RELAY_TAG: ${{ inputs.relay_tag }}
+      GATEWAY_IMAGE: ${{ inputs.gateway_image }}
+      GATEWAY_TAG: ${{ inputs.gateway_tag }}
+      CLIENT_IMAGE: ${{ inputs.client_image }}
+      CLIENT_TAG: ${{ inputs.client_tag }}
+      ELIXIR_IMAGE: ${{ inputs.elixir_image }}
+      ELIXIR_TAG: ${{ inputs.elixir_tag }}
+      HTTP_TEST_SERVER_IMAGE: ${{ inputs.http_test_server_image }}
+      HTTP_TEST_SERVER_TAG: ${{ inputs.http_test_server_tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+        - name: direct-curl-relay-restart
+        - name: direct-curl-api-down
+        - name: direct-curl-api-relay-down
+        - name: direct-curl-api-restart
+        - name: direct-dns-api-down
+        - name: direct-dns-relay-down
+        - name: direct-dns-two-resources
+        - name: direct-dns
+        - name: direct-download-roaming-network
+          rust_log: debug
+        - name: dns-failsafe
+        - name: dns-nm
+        - name: relay-graceful-shutdown
+        - name: relayed-curl-api-down
+        - name: relayed-curl-api-restart
+        - name: relayed-curl-relay-restart
+        - name: relayed-dns-api-down
+        - name: relayed-dns-relay-restart
+        - name: relayed-dns
+        - name: systemd/dns-systemd-resolved
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./.github/actions/gcp-docker-login
+      id: login
+      with:
+        project: firezone-staging
+    - name: Seed database
+      run: docker compose run elixir /bin/sh -c 'cd apps/domain && mix ecto.seed'
+    - name: Start docker compose in the background
+      run: |
+        set -xe
+
+
+        if [[ ! -z "${{ matrix.test.rust_log }}" ]]; then
+          export RUST_LOG="${{ matrix.test.rust_log }}"
+        fi
+
+
+        # Start one-by-one to avoid variability in service startup order
+
+        docker compose up -d dns.httpbin httpbin download.httpbin --no-build
+
+        docker compose up -d api web domain --no-build
+
+        docker compose up -d otel --no-build
+
+        docker compose up -d relay-1 --no-build
+
+        docker compose up -d relay-2 --no-build
+
+        docker compose up -d gateway --no-build
+
+        docker compose up -d client --no-build
+
+
+        # Wait a few seconds for the services to fully start. GH runners are
+
+        # slow, so this gives the Client enough time to initialize its tun interface,
+
+        # for example.
+
+        # Intended to mitigate <https://github.com/firezone/firezone/issues/5830>
+
+        sleep 3
+    - run: ./scripts/tests/${{ matrix.test.name }}.sh
+    - name: Show Client logs
+      if: '!cancelled()'
+      run: docker compose logs client
+    - name: Show Relay-1 logs
+      if: '!cancelled()'
+      run: docker compose logs relay-1
+    - name: Show Relay-2 logs
+      if: '!cancelled()'
+      run: docker compose logs relay-2
+    - name: Show Gateway logs
+      if: '!cancelled()'
+      run: docker compose logs gateway
+    - name: Show API logs
+      if: '!cancelled()'
+      run: docker compose logs api
