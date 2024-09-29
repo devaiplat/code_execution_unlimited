@@ -1,0 +1,229 @@
+name: jdx/mise
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  build-linux:
+    if: true
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: build-linux-x86_64-unknown-linux-gnu
+        save-if: false
+    - run: scripts/build-tarball.sh x86_64-unknown-linux-gnu
+    - uses: actions/upload-artifact@v4
+      with:
+        name: tarball-x86_64-unknown-linux-gnu
+        path: >
+          dist/*.tar.xz
+
+          dist/*.tar.gz
+        if-no-files-found: error
+  test-install-and-run:
+    runs-on: ubuntu-22.04
+    needs:
+    - build-linux
+    env:
+      GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - plugin: node
+          command: mise exec node@latest -- node -v
+        - plugin: ruby
+          command: mise exec ruby@latest -- ruby --version
+        - plugin: python
+          command: mise exec python@latest -- python -V
+        - plugin: direnv
+          command: mise exec direnv@latest -- direnv --version
+        - plugin: erlang
+          command: mise exec erlang@24.3.4.9 -- erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().'  -noshell
+        - plugin: elixir
+          command: >
+            mise use --global erlang@24.3.4.9
+
+            eval "$(mise env bash)"
+
+            mise use --global elixir@main-otp-24
+
+            eval "$(mise env bash)"
+
+            mise exec -- elixir --version
+        - plugin: golang
+          command: mise exec golang@latest -- go version
+        - plugin: java
+          command: mise exec java@openjdk -- java -version
+        - plugin: terraform
+          command: mise exec terraform@latest -- terraform -v
+        - plugin: deno
+          command: mise exec deno@latest -- deno --version
+        - plugin: bun
+          command: mise exec bun@latest -- bun --version
+        - plugin: kubectl
+          command: mise exec kubectl@latest -- kubectl version --client
+        - plugin: dotnet
+          command: mise exec dotnet@latest -- dotnet --list-sdks
+        - plugin: flutter
+          command: mise exec flutter@latest -- flutter --version
+        - plugin: crystal
+          command: mise exec crystal@latest -- crystal -v
+        - plugin: neovim
+          command: mise exec neovim@latest -- nvim --version
+        - plugin: php
+          command: mise exec php@latest -- php -v php
+        - plugin: rust
+          command: mise exec rust@nightly -- rustc -V
+        - plugin: postgres
+          command: mise exec postgres@latest -- psql -V
+    steps:
+    - name: apt-get
+      run: sudo apt-get update; sudo apt-get install zsh fish direnv re2c libcurl4-openssl-dev libgd-dev libonig-dev autoconf bison build-essential curl gettext git libgd-dev libcurl4-openssl-dev libedit-dev libicu-dev libjpeg-dev libmysqlclient-dev libonig-dev libpng-dev libpq-dev libreadline-dev libsqlite3-dev libssl-dev libxml2-dev libzip-dev openssl pkg-config re2c zlib1g-dev libwxgtk-webview3.0-gtk3-dev
+    - uses: actions/download-artifact@v4
+      with:
+        name: tarball-x86_64-unknown-linux-gnu
+        path: dist
+    - run: tar -C "$HOME" -xvJf dist/mise-*-linux-x64.tar.xz
+    - run: echo "$HOME/mise/bin" >> "$GITHUB_PATH"
+    - run: mise -v
+    - name: ${{matrix.command}}
+      uses: nick-fields/retry@v3
+      with:
+        timeout_minutes: 20
+        max_attempts: 3
+        retry_wait_seconds: 30
+        command: ${{matrix.command}}
+      env:
+        MISE_EXPERIMENTAL: 1
+  test-install:
+    runs-on: ubuntu-22.04
+    needs:
+    - build-linux
+    env:
+      GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        plugins:
+        - waypoint
+        - vault
+        - tfc-agent
+        - terraform-ls
+        - serf
+        - sentinel
+        - packer
+        - nomad
+        - levant
+        - consul
+        - boundary
+        - postgres
+        - rust
+        - action-validator
+        - dotnet-core
+        - neovim
+        - poetry
+        - link
+        - lua
+        - redis
+        - gcloud
+        - helm
+        - gleam
+        - awscli
+        - dart
+        - conan
+        - aws-sam-cli
+        - ansible-base
+        - kotlin
+        - pnpm
+        - ocaml
+        - elm
+        - nim
+        - alias
+        - mysql
+        - minikube
+        - gradle
+        - zig
+        - shellcheck
+        - scala
+        - maven
+        - kustomize
+        - graalvm
+        - sbcl
+    steps:
+    - name: Install zsh/fish/direnv
+      run: sudo apt-get update; sudo apt-get install zsh fish direnv
+    - uses: actions/download-artifact@v4
+      with:
+        name: tarball-x86_64-unknown-linux-gnu
+        path: dist
+    - run: tar -C "$HOME" -xvJf dist/mise-*-linux-x64.tar.xz
+    - run: echo "$HOME/mise/bin" >> "$GITHUB_PATH"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: mise install ${{matrix.plugins}}@latest (ces) (ces)
+      uses: nick-fields/retry@v3
+      with:
+        timeout_minutes: 20
+        max_attempts: 3
+        retry_wait_seconds: 30
+        command: mise install ${{matrix.plugins}}@latest
