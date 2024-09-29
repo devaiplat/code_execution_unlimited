@@ -1,0 +1,119 @@
+name: getsentry/sentry-javascript
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  HEAD_COMMIT: ${{ github.event.inputs.commit || github.sha }}
+  NX_CACHE_RESTORE_KEYS: >
+    nx-Linux-${{ github.ref }}-${{ github.event.inputs.commit || github.sha }}
+
+    nx-Linux-${{ github.ref }}
+
+    nx-Linux
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  flaky-detector:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 60
+    name: Check tests for flakiness
+    if: true
+    steps:
+    - name: Check out current branch
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: package.json
+        cache: yarn
+    - name: Install dependencies
+      run: yarn install --ignore-engines --frozen-lockfile
+    - name: NX cache
+      uses: actions/cache/restore@v4
+      with:
+        path: .nxcache
+        key: nx-Linux-${{ github.ref }}-${{ env.HEAD_COMMIT }}
+        restore-keys: ${{ env.NX_CACHE_RESTORE_KEYS }}
+    - name: Build packages
+      run: yarn build
+    - name: Install Playwright
+      uses: ./.github/actions/install-playwright
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Determine changed tests (ces) (ces)
+      uses: dorny/paths-filter@v3.0.1
+      id: changed
+      with:
+        list-files: json
+        filters: >
+          browser_integration: dev-packages/browser-integration-tests/suites/**/test.ts
+    - name: Detect flaky tests (ces)
+      id: test
+      run: yarn test:detect-flaky
+      working-directory: dev-packages/browser-integration-tests
+      env:
+        CHANGED_TEST_PATHS: ${{ steps.changed.outputs.browser_integration_files }}
+        TEST_RUN_COUNT: AUTO
+    - name: Upload Playwright Traces
+      uses: actions/upload-artifact@v4
+      if: failure() && steps.test.outcome == 'failure'
+      with:
+        name: playwright-test-results
+        path: dev-packages/browser-integration-tests/test-results
+        retention-days: 5
