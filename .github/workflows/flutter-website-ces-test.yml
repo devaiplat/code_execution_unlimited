@@ -1,0 +1,163 @@
+name: flutter/website
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: read-all
+env:
+  NODE_VERSION: 20
+jobs:
+  test:
+    name: Analyze and test code examples
+    runs-on: ubuntu-latest
+    if: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - name: Beta channel
+          branch: beta
+          experimental: true
+        - name: Stable channel
+          branch: stable
+          experimental: false
+    continue-on-error: ${{ matrix.experimental }}
+    steps:
+    - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: subosito/flutter-action@44ac965b96f18d999802d4b807e3256d5a3f9fa1
+      with:
+        channel: ${{ matrix.branch }}
+    - name: Fetch Dart dependencies
+      run: dart pub get
+      continue-on-error: ${{ matrix.experimental }}
+    - name: Check Dart code formatting
+      run: dart run flutter_site format-dart --check
+      continue-on-error: ${{ matrix.experimental }}
+    - name: Analyze Dart code
+      run: dart run flutter_site analyze-dart
+      continue-on-error: ${{ matrix.experimental }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Dart tests (ces) (ces)
+      run: dart run flutter_site test-dart
+      continue-on-error: ${{ matrix.experimental }}
+  excerpts:
+    name: Check if code excerpts are up to date
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dart-lang/setup-dart@0a8a0fc875eb934c15d08629302413c671d3f672
+      with:
+        sdk: stable
+    - name: Fetch Dart dependencies
+      run: dart pub get
+    - name: Check if excerpts are up to date
+      run: dart run flutter_site refresh-excerpts --fail-on-update --dry-run
+      continue-on-error: ${{ matrix.experimental }}
+  linkcheck:
+    name: Build site and check links
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Enable Corepack
+      run: corepack enable
+    - uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: pnpm
+    - name: Setup pnpm
+      run: corepack install
+    - name: Install node dependencies
+      run: pnpm install --frozen-lockfile
+    - uses: dart-lang/setup-dart@0a8a0fc875eb934c15d08629302413c671d3f672
+      with:
+        sdk: stable
+    - name: Fetch Dart dependencies
+      run: dart pub get
+    - name: Build site
+      run: dart run flutter_site build
+    - name: Check for broken Markdown link references
+      run: dart run flutter_site check-link-references
+    - name: Check for broken internal links
+      run: dart run flutter_site check-links
+  firebase-validate:
+    name: Validate Firebase configuration
+    runs-on: ubuntu-latest
+    if: true
+    steps:
+    - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dart-lang/setup-dart@0a8a0fc875eb934c15d08629302413c671d3f672
+      with:
+        sdk: stable
+    - name: Fetch Dart dependencies
+      run: dart pub get
+    - name: Validate the firebase.json file
+      run: dart run flutter_site verify-firebase-json
