@@ -1,0 +1,128 @@
+name: oceanprotocol/df-py
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+  BINANCE_API_URL: ${{secrets.BINANCE_API_URL}}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version:
+        - 3.8
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python {{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+    - uses: actions/checkout@v2
+      name: Checkout Barge
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: barge
+        ref: ${{ github.event.inputs.ref }}
+    - name: Login to Docker Hub
+      if: ${{ env.DOCKERHUB_PASSWORD && env.DOCKERHUB_USERNAME }}
+      run: |
+        echo "Login to Docker Hub";echo "$DOCKERHUB_PASSWORD" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+      env:
+        DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+    - name: Run Barge
+      working-directory: ${{ github.workspace }}/barge
+      env:
+        SUBGRAPH_VERSION: main
+        GANACHE_FORK: london
+      run: |
+        bash -x start_ocean.sh --no-aquarius --no-elasticsearch --no-provider --no-dashboard --with-thegraph > start_ocean.log &
+    - name: Install dependencies
+      working-directory: ${{ github.workspace }}
+      run: |
+        python -m pip install --upgrade pip
+
+        pip install -r requirements.txt
+    - name: Set up Openzeppelin
+      run: npm install @openzeppelin/contracts
+    - name: Wait for contracts deployment
+      working-directory: ${{ github.workspace }}/barge
+      run: |
+        for i in $(seq 1 250); do
+          sleep 10
+          [ -f "$HOME/.ocean/ocean-contracts/artifacts/ready" ] && break
+          done
+    - name: Read address.json contents
+      working-directory: ${{ github.workspace }}
+      run: cat "$HOME/.ocean/ocean-contracts/artifacts/address.json"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test (ces) (ces)
+      run: |
+        coverage run --omit="*test*" -m pytest
+
+        coverage report
+
+        coverage xml
+      env:
+        JUDGE_PRIVATE_KEY: ${{secrets.JUDGE_PRIVATE_KEY}}
+    - name: Publish code coverage
+      uses: paambaati/codeclimate-action@v2.7.5
+      env:
+        CC_TEST_REPORTER_ID: ${{secrets.CC_TEST_REPORTER_ID}}
