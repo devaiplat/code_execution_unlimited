@@ -1,0 +1,102 @@
+name: Recidiviz/justice-counts
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  playtest:
+    permissions:
+      contents: read
+      id-token: write
+    name: Deploy to Playtest
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Authorize Github Actions
+      uses: google-github-actions/auth@v2
+      with:
+        service_account: ${{ secrets.JUSTICE_COUNTS_WIP_SERVICE_ACCOUNT }}
+        workload_identity_provider: ${{ secrets.JUSTICE_COUNTS_WIP_ID }}
+        project_id: justice-counts-staging
+    - uses: google-github-actions/setup-gcloud@v1
+      with:
+        version: latest
+    - name: Extract Branch Name
+      shell: bash
+      run: |
+        echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+      id: extract_branch
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Start Deploy-to-playtesting Cloud Build trigger (ces) (ces)
+      run: |
+        gcloud --quiet builds triggers run Deploy-to-playtesting \
+
+        --branch=main \
+
+        --substitutions _SERVICE_NAME=${{ github.event.inputs.service_name }},_URL_TAG=${{ github.event.inputs.url_tag }},_SUBDIRECTORY=playtesting,_FRONTEND_URL=https://github.com/Recidiviz/justice-counts/archive/${{ steps.extract_branch.outputs.branch }}.tar.gz
+    - name: Bot Comment on Success
+      if: ${{ success() }}
+      run: gh pr comment ${{ steps.extract_branch.outputs.branch }} -b "@${{ github.triggering_actor }} successfully triggered a playtest deployment. Full deployment usually takes 5 minutes. Your playtest link is https://${{ github.event.inputs.url_tag }}---${{ github.event.inputs.service_name }}-b47yvyxs3q-uc.a.run.app/"
+      env:
+        GITHUB_TOKEN: ${{secrets.GH_HELPERBOT_TOKEN}}
+    - name: Bot Comment on Failure
+      if: ${{ failure() }}
+      run: gh pr comment ${{ steps.extract_branch.outputs.branch }} -b "@${{ github.triggering_actor }} Playtest deployment failed. See workflow failure logs at https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      env:
+        GITHUB_TOKEN: ${{secrets.GH_HELPERBOT_TOKEN}}
