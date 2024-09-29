@@ -1,0 +1,343 @@
+name: hoprnet/hoprnet
+env:
+  RUST_BACKTRACE: 1
+  FOUNDRY_PROFILE: ci
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.ref }}-test
+  cancel-in-progress: true
+jobs:
+  tests-unit:
+    runs-on: self-hosted-hoprnet-bigger
+    timeout-minutes: 60
+    if: true
+    env:
+      needs_nix_setup: false
+    steps:
+    - name: Checkout hoprnet repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Google Cloud Credentials
+      id: auth
+      uses: google-github-actions/auth@v2
+      if: ${{ !env.ACT }}
+      with:
+        token_format: access_token
+        credentials_json: ${{ secrets.GOOGLE_HOPRASSOCIATION_CREDENTIALS_REGISTRY }}
+    - name: Install Nix
+      if: env.needs_nix_setup == 'true'
+      uses: cachix/install-nix-action@v27
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: cachix/cachix-action@v15
+      if: env.needs_nix_setup == 'true'
+      with:
+        name: hoprnet
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      env:
+        USER: runner
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run unit tests (ces) (ces)
+      run: |
+        # run sc tests
+
+        nix develop -c make -j smart-contract-test
+
+        # run rust unit tests for entire workspace
+
+        nix build -L .#hopr-test
+      env:
+        HOPR_NETWORK: anvil-localhost
+  tests-smoke-websocket:
+    runs-on: self-hosted-hoprnet-big
+    timeout-minutes: 60
+    env:
+      needs_nix_setup: true
+    if: true
+    steps:
+    - name: Checkout hoprnet repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Google Cloud Credentials
+      id: auth
+      uses: google-github-actions/auth@v2
+      if: ${{ !env.ACT }}
+      with:
+        token_format: access_token
+        credentials_json: ${{ secrets.GOOGLE_HOPRASSOCIATION_CREDENTIALS_REGISTRY }}
+    - name: Install Nix
+      if: env.needs_nix_setup == 'true'
+      uses: cachix/install-nix-action@v27
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: cachix/cachix-action@v15
+      if: env.needs_nix_setup == 'true'
+      with:
+        name: hoprnet
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      env:
+        USER: runner
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Download snapshot for test_websocket_api (ces) (ces)
+      id: download-snapshot
+      if: ${{ !env.ACT }}
+      run: |
+        mkdir -p /tmp/hopr-smoke-test/test_websocket_api/snapshot
+
+        gcloud storage rsync gs://hoprnet-test-artifacts/websocket_api/snapshot /tmp/hopr-smoke-test/test_websocket_api/snapshot
+      continue-on-error: true
+    - name: Check snapshot for test_websocket_api (ces)
+      run: ls -lR /tmp/hopr-smoke-test/test_websocket_api/snapshot || echo "no snapshot found"
+    - name: Run smoke tests websocket (ces)
+      run: nix develop .#smoke-tests -c python3 -m pytest tests/test_websocket_api.py
+    - name: Upload snapshot for test_websocket_api (ces)
+      uses: google-github-actions/upload-cloud-storage@v2
+      if: ${{ !env.ACT && always() && steps.download-snapshot.outcome != 'success' }}
+      with:
+        path: /tmp/hopr-smoke-test/test_websocket_api/snapshot
+        destination: hoprnet-test-artifacts/websocket_api
+    - name: Compress test logs (ces)
+      if: ${{ !env.ACT && always() }}
+      run: |
+        # Copy all the logs to a directory to avoid log file changes and simplify tar command
+
+        test_path=/tmp/test-smoke-websocket-${{ github.run_id }}-${{ github.run_number }}
+
+        mkdir -p ${test_path}
+
+        cp -r /tmp/hopr-smoke-test/test_websocket_api/*.log ${test_path} || echo "no files to copy"
+
+        cd ${test_path}
+
+        tar -czvf ${test_path}.tgz ${test_path}
+      working-directory: /tmp
+    - name: Upload test logs (ces)
+      uses: google-github-actions/upload-cloud-storage@v2
+      if: ${{ !env.ACT && always() }}
+      with:
+        path: /tmp/
+        glob: test-smoke-*
+        parent: false
+        destination: hoprnet-test-logs/pr-${{ github.event.pull_request.number }}
+  tests-smoke:
+    runs-on: self-hosted-hoprnet-big
+    timeout-minutes: 60
+    needs:
+    - tests-smoke-websocket
+    env:
+      needs_nix_setup: true
+    strategy:
+      matrix:
+        suite:
+        - integration
+        - session
+        - hopli
+    if: true
+    steps:
+    - name: Checkout hoprnet repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Google Cloud Credentials
+      id: auth
+      uses: google-github-actions/auth@v2
+      if: ${{ !env.ACT }}
+      with:
+        token_format: access_token
+        credentials_json: ${{ secrets.GOOGLE_HOPRASSOCIATION_CREDENTIALS_REGISTRY }}
+    - name: Install Nix
+      if: env.needs_nix_setup == 'true'
+      uses: cachix/install-nix-action@v27
+      with:
+        github_access_token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: cachix/cachix-action@v15
+      if: env.needs_nix_setup == 'true'
+      with:
+        name: hoprnet
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      env:
+        USER: runner
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Download snapshot for test_${{ matrix.suite }} (ces) (ces)
+      id: download-snapshot
+      if: ${{ !env.ACT }}
+      run: |
+        mkdir -p /tmp/hopr-smoke-test/test_${{ matrix.suite }}/snapshot
+
+        gcloud storage rsync gs://hoprnet-test-artifacts/${{ matrix.suite }}/snapshot /tmp/hopr-smoke-test/test_${{ matrix.suite }}/snapshot
+      continue-on-error: true
+    - name: Check snapshot for test_${{ matrix.suite }} (ces)
+      run: ls -lR /tmp/hopr-smoke-test/test_${{ matrix.suite }}/snapshot || echo "no snapshot found"
+    - name: Run smoke tests ${{ matrix.suite }} (ces)
+      run: nix develop .#smoke-tests -c python3 -m pytest tests/test_${{ matrix.suite }}.py
+    - name: Upload snapshot for test_${{ matrix.suite }} (ces)
+      uses: google-github-actions/upload-cloud-storage@v2
+      if: ${{ !env.ACT && always() && steps.download-snapshot.outcome != 'success' }}
+      with:
+        path: /tmp/hopr-smoke-test/test_${{ matrix.suite }}/snapshot
+        destination: hoprnet-test-artifacts/${{ matrix.suite }}
+    - name: Compress test logs (ces)
+      if: ${{ !env.ACT && always() }}
+      run: |
+        # Copy all the logs to a directory to avoid log file changes and simplify tar command
+
+        test_path=/tmp/test-smoke-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_number }}
+
+        mkdir -p ${test_path}
+
+        cp -r /tmp/hopr-smoke-test/test_${{ matrix.suite }}/*.log ${test_path} || echo "no files to copy"
+
+        cd ${test_path}
+
+        tar -czvf ${test_path}.tgz ${test_path}
+      working-directory: /tmp
+    - name: Upload test logs (ces)
+      uses: google-github-actions/upload-cloud-storage@v2
+      if: ${{ !env.ACT && always() }}
+      with:
+        path: /tmp/
+        glob: test-smoke-*
+        parent: false
+        destination: hoprnet-test-logs/pr-${{ github.event.pull_request.number }}
