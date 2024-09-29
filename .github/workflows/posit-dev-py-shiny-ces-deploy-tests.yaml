@@ -1,0 +1,156 @@
+name: posit-dev/py-shiny
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  playwright-deploys:
+    concurrency: playwright-deploys-${{ matrix.config.name }}
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.config.name }}
+    strategy:
+      matrix:
+        python-version:
+        - 3.10
+        os:
+        - ubuntu-latest
+        config:
+        - name: pypi-shiny-rsconnect-connect
+          released_connect_server: true
+          pypi_shiny: true
+          pypi_rsconnect: true
+          base_test_dir: ./tests/playwright/deploys/express-page_sidebar
+          app_name: pypi-shiny-rsconnect
+          test_shinyappsio: false
+        - name: pypi-shiny-rsconnect-dogfood
+          released_connect_server: false
+          pypi_shiny: true
+          pypi_rsconnect: true
+          base_test_dir: ./tests/playwright/deploys/express-page_sidebar
+          app_name: pypi-shiny-rsconnect
+          test_shinyappsio: false
+        - name: pypi-shiny-dev-rsconnect-dogfood
+          released_connect_server: false
+          pypi_shiny: true
+          pypi_rsconnect: false
+          base_test_dir: ./tests/playwright/deploys/express-page_sidebar
+          app_name: pypi-shiny-dev-rsconnect
+          test_shinyappsio: false
+        - name: github-shiny-dev-rsconnect-dogfood
+          released_connect_server: false
+          github_shiny: true
+          pypi_shiny: false
+          pypi_rsconnect: false
+          base_test_dir: ./tests/playwright/deploys/express-page_sidebar
+          app_name: pypi-shiny-dev-rsconnect
+          test_shinyappsio: false
+        - name: dev-shiny-rsconnect-dogfood
+          released_connect_server: false
+          pypi_shiny: false
+          pypi_rsconnect: false
+          base_test_dir: ./tests/playwright/deploys
+          app_name: express_page_sidebar
+          test_shinyappsio: true
+      fail-fast: false
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup py-shiny
+      uses: ./.github/py-shiny/setup
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install pypi shiny and htmltools (uninstall GitHub versions)
+      if: ${{ matrix.config.pypi_shiny }}
+      run: |
+        uv pip uninstall shiny htmltools
+
+        uv pip install shiny htmltools
+    - name: Install GitHub shiny@v1.0.0 and htmltools@v0.5.3 (uninstall PyPI versions)
+      if: ${{ matrix.config.github_shiny }}
+      run: |
+        uv pip uninstall shiny htmltools
+
+        uv pip install "htmltools @ git+https://github.com/posit-dev/py-htmltools.git@v0.5.3" "shiny @ git+https://github.com/posit-dev/py-shiny.git@v1.0.0"
+    - name: Install rsconnect (PyPI)
+      if: ${{ matrix.config.pypi_rsconnect }}
+      run: |
+        uv pip install rsconnect
+    - name: Install rsconnect (GitHub)
+      if: ${{ ! matrix.config.pypi_rsconnect }}
+      run: |
+        make ci-install-rsconnect
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test that deployable example apps work (ces) (ces)
+      timeout-minutes: 5
+      env:
+        DEPLOY_APPS: false
+      run: |
+        make playwright-deploys TEST_FILE="${{ matrix.config.base_test_dir }} -vv"
+    - name: Deploy apps and run tests (on `push` or `deploy**` branches) (ces)
+      env:
+        DEPLOY_APPS: true
+        DEPLOY_CONNECT_SERVER_URL: ${{ (matrix.config.released_connect_server && 'https://connect.posit.it/') || 'https://rsc.radixu.com/' }}
+        DEPLOY_CONNECT_SERVER_API_KEY: ${{ (matrix.config.released_connect_server && secrets.DEPLOY_CONNECT_POSIT_SERVER_API_KEY) || secrets.DEPLOY_CONNECT_SERVER_API_KEY }}
+        DEPLOY_SHINYAPPS_NAME: ${{ matrix.config.test_shinyappsio && secrets.DEPLOY_SHINYAPPS_NAME }}
+        DEPLOY_SHINYAPPS_TOKEN: ${{ matrix.config.test_shinyappsio && secrets.DEPLOY_SHINYAPPS_TOKEN }}
+        DEPLOY_SHINYAPPS_SECRET: ${{ matrix.config.test_shinyappsio && secrets.DEPLOY_SHINYAPPS_SECRET }}
+        EXPRESS_PAGE_SIDEBAR_NAME: ${{ matrix.config.app_name }}
+        DEPLOY_GITHUB_REQUIREMENTS_TXT: ${{ !matrix.config.pypi_shiny }}
+      timeout-minutes: 30
+      run: |
+        make playwright-deploys TEST_FILE="${{ matrix.config.base_test_dir }} -vv --numprocesses 12"
