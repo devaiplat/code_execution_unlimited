@@ -1,0 +1,176 @@
+name: decentraland/unity-explorer
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+  UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+  UNITY_LICENSE: ${{ secrets.UNITY_PERSONAL_LICENSE }}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    if: true
+    name: Test
+    runs-on: Ubuntu-Big
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Create LFS file list
+      run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+    - name: Restore LFS cache
+      uses: actions/cache@v4
+      id: lfs-cache
+      with:
+        path: .git/lfs
+        key: ${{ runner.os }}-lfs-${{ hashFiles('.lfs-assets-id') }}
+    - name: Git LFS Pull
+      run: |
+        git lfs pull
+
+        git add .
+
+        git reset --hard
+    - name: Restore Library cache
+      uses: actions/cache@v4
+      with:
+        path: Explorer/Library
+        key: Library-Explorer-Windows
+    - name: Setup SSH Agent
+      uses: webfactory/ssh-agent@v0.9.0
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+    - name: Add GitHub to the SSH known hosts file
+      run: |
+        sshPath="$HOME/.ssh"
+
+        if [ ! -d "$sshPath" ]; then
+          mkdir -p "$sshPath"
+        fi
+
+
+        knownHostsPath="$sshPath/known_hosts"
+
+        curl -s 'https://api.github.com/meta' | jq -r '.ssh_keys[] | "github.com " + .' >> "$knownHostsPath"
+
+        chmod 600 "$knownHostsPath"
+    - name: Clone Packages To Use Locally
+      run: |
+        git clone git@github.com:decentraland/unity-explorer-packages.git            
+
+        jsonFilePath="Explorer/Packages/manifest.json"
+
+        sed -i 's|git@github.com:decentraland/unity-explorer-packages.git?path=/StylizedGrassShader|file:../../unity-explorer-packages/StylizedGrassShader|' "$jsonFilePath"
+
+        sed -i 's|git@github.com:decentraland/unity-explorer-packages.git?path=/StylizedWater2|file:../../unity-explorer-packages/StylizedWater2|' "$jsonFilePath"
+
+        sed -i 's|git@github.com:decentraland/unity-explorer-packages.git?path=/AVProVideo|file:../../unity-explorer-packages/AVProVideo|' "$jsonFilePath"
+
+        sed -i 's|git@github.com:decentraland/unity-explorer-packages.git?path=/SuperScrollView|file:../../unity-explorer-packages/SuperScrollView|' "$jsonFilePath"
+
+        sed -i 's|git@github.com:decentraland/unity-explorer-packages.git?path=/SoftMask|file:../../unity-explorer-packages/SoftMask|' "$jsonFilePath"
+
+        ls -l
+
+        # Display the content of manifest.json
+
+        cat "$jsonFilePath"
+    - uses: game-ci/unity-test-runner@v4.1.1
+      id: testRunner
+      timeout-minutes: 30
+      continue-on-error: true
+      with:
+        projectPath: Explorer
+        testMode: all
+    - name: Convert NUnit to JUnit
+      if: always()
+      run: |
+        mkdir -p ${{ steps.testRunner.outputs.artifactsPath }}-junit
+
+        sudo rm /etc/apt/sources.list.d/microsoft-prod.list
+
+        sudo apt-get update
+
+        sudo apt-get install -y xsltproc
+
+        sudo xsltproc \
+          --output ${{ steps.testRunner.outputs.artifactsPath }}-junit/playmode-results-junit.xml \
+          .github/workflows/nunit-to-junit.xsl \
+          ${{ steps.testRunner.outputs.artifactsPath }}/playmode-results.xml \
+
+        sudo xsltproc \
+          --output ${{ steps.testRunner.outputs.artifactsPath }}-junit/editmode-results-junit.xml \
+          .github/workflows/nunit-to-junit.xsl \
+          ${{ steps.testRunner.outputs.artifactsPath }}/editmode-results.xml
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Report test results (ces) (ces)
+      uses: decentraland/test-reporting@v0.3
+      if: always()
+      with:
+        name: Report test results
+        path: ${{ steps.testRunner.outputs.artifactsPath }}-junit/*.xml
+        reporter: jest-junit
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: Test results (play mode & edit mode)
+        path: ${{ steps.testRunner.outputs.artifactsPath }}
+        if-no-files-found: error
