@@ -1,0 +1,53 @@
+name: PostHog/posthog
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  SECRET_KEY: 6b01eee4f945ca25045b5aab440b953461faf08693a9abbf1166dc7c6b9772da
+  DATABASE_URL: postgres://posthog:posthog@localhost:5432/posthog
+  REDIS_URL: redis://localhost
+  CLICKHOUSE_HOST: localhost
+  CLICKHOUSE_SECURE: False
+  CLICKHOUSE_VERIFY: False
+  TEST: 1
+  OBJECT_STORAGE_ENABLED: True
+  OBJECT_STORAGE_ENDPOINT: http://localhost:19000
+  OBJECT_STORAGE_ACCESS_KEY_ID: object_storage_root_user
+  OBJECT_STORAGE_SECRET_ACCESS_KEY: object_storage_root_password
+jobs:
+  django:
+    name: Run Django tests and save test durations
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./.github/actions/run-backend-tests
+      with:
+        concurrency: 1
+        group: 1
+        token: ${{ secrets.POSTHOG_BOT_GITHUB_TOKEN }}
+        python-version: 3.11.9
+        clickhouse-server-image: clickhouse/clickhouse-server:23.12.6.19-alpine
+        segment: FOSS
+        person-on-events: false
+    - name: Upload updated timing data as artifacts
+      uses: actions/upload-artifact@v4
+      if: ${{ inputs.person-on-events != 'true' && inputs.clickhouse-server-image == 'clickhouse/clickhouse-server:23.12.6.19-alpine' }}
+      with:
+        name: timing_data-${{ inputs.segment }}-${{ inputs.group }}
+        path: .test_durations
+        retention-days: 2
