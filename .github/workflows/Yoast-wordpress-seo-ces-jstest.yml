@@ -1,0 +1,242 @@
+name: Yoast/wordpress-seo
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  yarn-test-full:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+        - analysis-report
+        - browserslist-config
+        - components
+        - feature-flag
+        - helpers
+        - js
+        - replacement-variable-editor
+        - search-metadata-previews
+        - social-metadata-forms
+        - social-metadata-previews
+    name: TestJS - ${{ matrix.package }} (full)
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up node and enable caching of dependencies
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: ./.nvmrc
+        cache: yarn
+    - name: Yarn install
+      run: yarn install
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Show debug info
+      run: |
+        npm --version
+
+        node --version
+
+        yarn --version
+
+        grunt --version
+
+        yarn run jest --version
+    - name: Build all packages
+      run: yarn run build --ignore "@yoast/wordpress-seo"
+    - name: Show Jest version
+      run: yarn run jest --version
+      working-directory: packages/${{ matrix.package }}
+    - name: Show Config
+      run: yarn test --showConfig
+      working-directory: packages/${{ matrix.package }}
+    - name: Run Javascript tests (ces)
+      run: yarn test --ci --coverage
+      working-directory: packages/${{ matrix.package }}
+    - name: Upload coverage results to Coveralls
+      uses: coverallsapp/github-action@v2
+      env:
+        COVERALLS_SERVICE_NUMBER: ${{ github.sha }}
+      with:
+        flag-name: package-${{ matrix.package }}
+        parallel: true
+  yarn-test-onlyChanged:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - package: yoastseo
+          needs_premium_config: true
+    name: TestJS - ${{ matrix.package }}${{ github.event_name == 'pull_request' && ' (onlyChanged)' || ' (full)' }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Checks for changes
+      uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+      id: changes
+      with:
+        filters: >
+          src:
+            - 'packages/${{ matrix.package }}/**'
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Checks if tests should be run (ces) (ces)
+      id: checks-run
+      run: |
+        echo "should=${{ github.event_name != 'pull_request' || steps.changes.outputs.src == 'true' }}" >> "$GITHUB_OUTPUT"
+    - name: Checkout premium configuration
+      if: ${{ steps.checks-run.outputs.should == 'true' && matrix.needs_premium_config == true }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: packages/yoastseo/premium-configuration
+        fetch-depth: 0
+        token: ${{ secrets.YOASTBOT_CI_PAT_DIST }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up node and enable caching of dependencies
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: ./.nvmrc
+        cache: yarn
+    - name: Yarn install
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      run: yarn install
+    - name: Show debug info
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      run: |
+        npm --version
+
+        node --version
+
+        yarn --version
+
+        grunt --version
+
+        yarn run jest --version
+    - name: Build all packages
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      run: yarn run build --ignore "@yoast/wordpress-seo"
+    - name: Show Jest version
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      run: yarn run jest --version
+      working-directory: packages/${{ matrix.package }}
+    - name: Show Config
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      run: yarn test --showConfig
+      working-directory: packages/${{ matrix.package }}
+    - name: Run Javascript tests (ces)
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      run: yarn test --ci --coverage
+      working-directory: packages/${{ matrix.package }}
+    - name: Upload coverage results to Coveralls
+      if: ${{ steps.checks-run.outputs.should == 'true' }}
+      uses: coverallsapp/github-action@v2
+      env:
+        COVERALLS_SERVICE_NUMBER: ${{ github.sha }}
+      with:
+        flag-name: package-${{ matrix.package }}
+        parallel: true
