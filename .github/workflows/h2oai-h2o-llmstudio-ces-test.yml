@@ -1,0 +1,35 @@
+name: h2oai/h2o-llmstudio
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.10.11
+    - run: nvidia-smi
+    - run: make setup-dev
+    - run: make test
+    - name: Clean workspace after action
+      if: ${{ always() }}
+      run: |
+        rm -rf ${{ github.workspace }}/*
