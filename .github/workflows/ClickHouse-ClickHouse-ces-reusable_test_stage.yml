@@ -1,0 +1,32 @@
+env:
+  PYTHONUNBUFFERED: 1
+name: ClickHouse/ClickHouse
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  s:
+    if: true
+    strategy:
+      fail-fast: false
+      matrix:
+        job_name_and_runner_type: ${{ fromJson(inputs.data).stages_data[inputs.stage] }}
+    uses: ./.github/workflows/reusable_test.yml
+    with:
+      test_name: ${{ matrix.job_name_and_runner_type.job_name }}
+      runner_type: ${{ matrix.job_name_and_runner_type.runner_type }}
+      data: ${{ inputs.data }}
+    secrets:
+      secret_envs: ${{ secrets.secret_envs }}
