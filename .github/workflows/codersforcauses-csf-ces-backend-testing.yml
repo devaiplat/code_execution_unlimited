@@ -1,0 +1,132 @@
+name: codersforcauses/csf
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    services:
+      db:
+        image: postgres
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: github-actions
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python Env
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11.4
+    - name: "Setup Poetry \U0001F3D7"
+      uses: snok/install-poetry@v1
+      with:
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    - name: "Cache .venv \U0001F4E6"
+      id: cached-poetry-dependencies
+      uses: actions/cache@v3.0.6
+      with:
+        path: server/.venv
+        key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+    - name: "Install dependencies \U0001F468\U0001F3FB‍\U0001F4BB"
+      run: poetry install
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+    - name: "Run Migrations \U0001F54A️"
+      env:
+        API_SECRET_KEY: o!v%_v0zjvc5+_)e!r+o!_uefr2a&)lfgv17$ex=a!ei%!y-_o
+        POSTGRES_HOST: localhost
+        POSTGRES_PASSWORD: password
+        POSTGRES_PORT: 5432
+        EMAIL_PORT: 1025
+        FRONTEND_URL: http://localhost:8082
+      run: |
+        source .venv/bin/activate
+
+        python manage.py migrate
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: "Run tests \U0001F9EA (ces) (ces)"
+      env:
+        API_SECRET_KEY: o!v%_v0zjvc5+_)e!r+o!_uefr2a&)lfgv17$ex=a!ei%!y-_o
+        JWT_SIGNING_KEY: NjMgNmYgNmQgNmQgNzUgNmUgNjkgNzQgNzkgNzMgNzAgNjkgNzIgNjkgNzQgNjYgNmYgNzUgNmUgNjQgNjEgNzQgNjkgNmYgNmU=
+        POSTGRES_HOST: localhost
+        POSTGRES_PASSWORD: password
+        POSTGRES_PORT: 5432
+        EMAIL_PORT: 1025
+        FRONTEND_URL: http://localhost:8082
+      run: |
+        source .venv/bin/activate
+
+        python3 -m pip install coverage
+
+        coverage run manage.py test
+
+        coverage xml
+    - name: Upload Coverage ☂️
+      uses: codecov/codecov-action@v3
+      with:
+        flags: backend
+        files: ./server/coverage.xml
