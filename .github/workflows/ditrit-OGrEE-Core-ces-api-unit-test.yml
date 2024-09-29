@@ -1,0 +1,151 @@
+name: ditrit/OGrEE-Core
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  api-unit-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./API
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: 1.21
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install gotestsum (ces) (ces)
+      run: go install gotest.tools/gotestsum@latest
+    - name: Install gocov
+      run: go install github.com/axw/gocov/gocov@latest
+    - name: Install gocov-xml
+      run: go install github.com/AlekSi/gocov-xml@latest
+    - name: Create MongoDB Container
+      run: cd ../deploy/docker && make test_api
+    - name: Build
+      run: make
+    - name: Test (ces)
+      run: gotestsum --junitfile tests-api.xml -- -coverpkg=./... -coverprofile=coverage_api.out -p 1 ./...
+    - name: Log Test Coverage (ces)
+      run: go tool cover -func coverage_api.out | grep total
+    - name: Generate coverage XML report
+      run: gocov convert coverage_api.out | gocov-xml > coverage_api.xml
+    - name: Test Report (ces)
+      uses: dorny/test-reporter@v1
+      if: github.actor != 'dependabot[bot]'
+      with:
+        name: API Tests Report
+        path: ./API/tests-api.xml
+        reporter: java-junit
+    - uses: actions/upload-artifact@v4
+      with:
+        name: coverage
+        path: ./API/coverage_api.out
+    - uses: actions/upload-artifact@v4
+      with:
+        name: coverage_api_xml
+        path: ./API/coverage_api.xml
+  generate-coverage-badge:
+    needs: api-unit-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: ./
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Generate Badge
+      uses: ./.github/actions/coverage/generate-badge
+      with:
+        COVERAGE_REPORT_ARTIFACT: coverage_api_xml
+        COVERAGE_REPORT_NAME: coverage_api.xml
+        LABEL: API coverage
+        OUTPUT_FILE: api_coverage_badge.svg
+        RED_LIMIT: 50
+        GREEN_LIMIT: 65
+        BADGE_ARTIFACT_NAME: api_coverage_badge
+  upload-coverage-badge:
+    needs: generate-coverage-badge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: ./
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Upload Badge
+      uses: ./.github/actions/coverage/upload-badge
+      with:
+        BADGE_ARTIFACT_NAME: api_coverage_badge
+        BADGE_FILE_NAME: api_coverage_badge.svg
+        BRANCH_NAME: coverage_badges
+        github_token: ${{ secrets.GITHUB_TOKEN }}
