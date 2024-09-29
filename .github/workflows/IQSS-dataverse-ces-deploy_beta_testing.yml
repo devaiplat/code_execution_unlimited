@@ -1,0 +1,138 @@
+name: IQSS/dataverse
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-java@v3
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Enable API Session Auth feature flag
+      working-directory: src/main/resources/META-INF
+      run: echo -e "dataverse.feature.api-session-auth=true" >> microprofile-config.properties
+    - name: Set build number
+      run: scripts/installer/custom-build-number
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build application war
+      run: mvn package
+    - name: Get war file name
+      working-directory: target
+      run: echo "war_file=$(ls *.war | head -1)">> $GITHUB_ENV
+    - name: Upload war artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: built-app
+        path: ./target/${{ env.war_file }}
+  deploy-to-payara:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Download war artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: built-app
+        path: ./
+    - name: Get war file name
+      run: echo "war_file=$(ls *.war | head -1)">> $GITHUB_ENV
+    - name: Copy war file to remote instance
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.BETA_PAYARA_INSTANCE_HOST }}
+        username: ${{ secrets.BETA_PAYARA_INSTANCE_USERNAME }}
+        key: ${{ secrets.BETA_PAYARA_INSTANCE_SSH_PRIVATE_KEY }}
+        source: ./${{ env.war_file }}
+        target: /home/${{ secrets.BETA_PAYARA_INSTANCE_USERNAME }}
+        overwrite: true
+    - name: Execute payara war deployment remotely
+      uses: appleboy/ssh-action@v1.0.0
+      env:
+        INPUT_WAR_FILE: ${{ env.war_file }}
+      with:
+        host: ${{ secrets.BETA_PAYARA_INSTANCE_HOST }}
+        username: ${{ secrets.BETA_PAYARA_INSTANCE_USERNAME }}
+        key: ${{ secrets.BETA_PAYARA_INSTANCE_SSH_PRIVATE_KEY }}
+        envs: INPUT_WAR_FILE
+        script: >
+          APPLICATION_NAME=dataverse-backend
+
+          ASADMIN='/usr/local/payara6/bin/asadmin --user admin'
+
+          $ASADMIN undeploy $APPLICATION_NAME
+
+          $ASADMIN stop-domain
+
+          rm -rf /usr/local/payara6/glassfish/domains/domain1/generated
+
+          rm -rf /usr/local/payara6/glassfish/domains/domain1/osgi-cache
+
+          $ASADMIN start-domain
+
+          $ASADMIN deploy --name $APPLICATION_NAME $INPUT_WAR_FILE
+
+          $ASADMIN stop-domain
+
+          $ASADMIN start-domain
