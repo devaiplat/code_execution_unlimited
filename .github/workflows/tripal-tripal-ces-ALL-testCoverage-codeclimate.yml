@@ -1,0 +1,115 @@
+name: tripal/tripal
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    name: Test Coverage
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Build the Docker
+      run: |
+        docker build --tag=tripaldocker:localdocker \
+          --build-arg phpversion="8.3" \
+          --build-arg drupalversion="10.3.x-dev" \
+          --build-arg postgresqlversion="16" \
+          --build-arg chadoschema='teacup' ./
+    - name: Spin up Local Docker
+      run: |
+        docker run --publish=80:80 --name=tripaldocker -tid \
+          --volume=`pwd`:/var/www/drupal/web/modules/contrib/tripal \
+          tripaldocker:localdocker
+        docker exec tripaldocker service postgresql restart
+    - name: Inject slug/short variables
+      uses: rlespinasse/github-slug-action@v4
+    - name: Prepare for Code Coverage
+      run: |
+        curl -L https://codeclimate.com/downloads/test-reporter/test-reporter-latest-linux-amd64 > ./cc-test-reporter
+
+        docker cp cc-test-reporter tripaldocker:/var/www/drupal/web/modules/contrib/tripal
+
+        docker exec tripaldocker chmod a+x /var/www/drupal/web/modules/contrib/tripal/cc-test-reporter
+
+        docker exec --workdir=/var/www/drupal/web/modules/contrib/tripal tripaldocker ./cc-test-reporter before-build --debug
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Tests for Coverage (ces) (ces)
+      env:
+        SIMPLETEST_BASE_URL: http://localhost
+        SIMPLETEST_DB: pgsql://drupaladmin:drupaldevelopmentonlylocal@localhost/sitedb
+        BROWSER_OUTPUT_DIRECTORY: /var/www/drupal/web/sites/default/files/simpletest
+      run: |
+        docker exec tripaldocker service postgresql restart
+
+        docker exec -e SIMPLETEST_BASE_URL=$SIMPLETEST_BASE_URL \
+            -e SIMPLETEST_DB=$SIMPLETEST_DB \
+            -e BROWSER_OUTPUT_DIRECTORY=$BROWSER_OUTPUT_DIRECTORY \
+            --workdir=/var/www/drupal/web/modules/contrib/tripal \
+          tripaldocker phpunit --coverage-text \
+            --coverage-clover /var/www/drupal/web/modules/contrib/tripal/clover.xml
+        docker exec tripaldocker ls /var/www/drupal/web/modules/contrib/tripal
+    - name: Publish code coverage to Code Climate
+      run: |
+        docker exec --workdir=/var/www/drupal/web/modules/contrib/tripal tripaldocker \
+          git config --global --add safe.directory /var/www/drupal/web/modules/contrib/tripal
+        docker exec --workdir=/var/www/drupal/web/modules/contrib/tripal \
+          tripaldocker ./cc-test-reporter after-build clover.xml \
+          --id ${{ secrets.CODECLIMATE_TEST_REPORTER_ID }} \
+          --debug -t clover -p /var/www/drupal/web/modules/contrib/tripal
