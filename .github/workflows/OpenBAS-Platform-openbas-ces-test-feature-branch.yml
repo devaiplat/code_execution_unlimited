@@ -1,0 +1,161 @@
+name: OpenBAS-Platform/openbas
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  openbas-platform:
+    name: openbas-platform
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: jirutka/setup-alpine@v1
+      with:
+        branch: v3.18
+        extra-repositories: >
+          https://dl-cdn.alpinelinux.org/alpine/edge/community/
+        packages: >
+          nodejs npm git tini gcc g++ make musl-dev cargo openjdk21-jdk maven postfix postfix-pcre
+    - name: Setup Node.js
+      run: |
+        npm install -g  yarn
+      shell: alpine.sh --root {0}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build into Alpine
+      run: |
+        export JAVA_HOME=/usr/lib/jvm/default-jvm/
+
+        cd openbas-front
+
+        yarn install
+
+        yarn build
+
+        cd ../
+
+        mvn install -DskipTests -Pdev
+      shell: alpine.sh {0}
+    - run: mkdir -p openbas-build/
+    - run: cp openbas-api/target/openbas-api.jar openbas-build/
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: filigran/openbas-platform
+        tags: >
+          type=ref,event=branch
+
+          type=ref,event=pr
+
+          type=semver,pattern={{version}}
+
+          type=semver,pattern={{major}}.{{minor}}
+    - name: Login to DockerHub
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Build and push
+      id: buildpush
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile_ga
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+    outputs:
+      dockerBuildDigest: ${{ steps.buildpush.outputs.digest }}
+  deploy:
+    name: deploy
+    needs:
+    - openbas-platform
+    runs-on: ubuntu-latest
+    steps:
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: filigran/openbas-platform
+        tags: >
+          type=ref,event=branch
+
+          type=ref,event=pr
+
+          type=semver,pattern={{version}}
+
+          type=semver,pattern={{major}}.{{minor}}
+    - name: deploy via awx
+      uses: certara/github-action-ansible-tower-awx@master
+      with:
+        ansible-tower-user: ${{ secrets.AWX_USER }}
+        ansible-tower-pass: ${{ secrets.AWX_PASSWORD }}
+        ansible-tower-url: ${{ secrets.AWX_URL }}
+        template-id: 65
+        additional-vars: >
+          { "openbas_version": "${{steps.meta.outputs.version}}", "openbas_config": ${{ inputs.openbas_config }}, "image_digest": "${{ needs.openbas-platform.outputs.dockerBuildDigest }}" }
+    - name: Forge URL to match playbook limitations
+      id: urlforge
+      run: |
+        url=$(echo "${{steps.meta.outputs.version}}" | cut -c 1-20 | sed 's/-*$//')
+
+        echo "url=$url" >> $GITHUB_OUTPUT
+    - name: display URL
+      run: echo "https://${{steps.urlforge.outputs.url}}.obas.dev.filigran.io"
