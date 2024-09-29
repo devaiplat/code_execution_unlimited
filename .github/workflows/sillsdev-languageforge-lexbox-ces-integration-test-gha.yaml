@@ -1,0 +1,148 @@
+name: sillsdev/languageforge-lexbox
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  execute:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Task
+      uses: arduino/setup-task@v2
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - run: task setup-local-env
+    - name: setup k8s
+      uses: helm/kind-action@v1.10.0
+      with:
+        config: deployment/gha/kind.yaml
+    - name: Verify k8s
+      run: |
+        kubectl cluster-info
+
+        kubectl get nodes
+    - name: Update image lexbox-api version
+      uses: mikefarah/yq@0b34c9a00de1c575a34eea05af1d956a525c4fc1
+      with:
+        cmd: yq eval -i '(.images.[] | select(.name == "ghcr.io/sillsdev/lexbox-api").newTag) = "${{ inputs.lexbox-api-tag }}"' "./deployment/gha/kustomization.yaml"
+    - name: Pull hgweb if updated
+      id: hgweb_image
+      continue-on-error: true
+      run: docker pull ghcr.io/sillsdev/lexbox-hgweb:${{ inputs.lexbox-api-tag }}
+    - name: Update image hgweb version
+      if: ${{ steps.hgweb_image.outcome == 'success' }}
+      uses: mikefarah/yq@0b34c9a00de1c575a34eea05af1d956a525c4fc1
+      with:
+        cmd: yq eval -i '(.images.[] | select(.name == "ghcr.io/sillsdev/lexbox-hgweb").newTag) = "${{ inputs.lexbox-api-tag }}"' "./deployment/gha/kustomization.yaml"
+    - name: Pull ui if updated
+      id: ui_image
+      continue-on-error: true
+      run: docker pull ghcr.io/sillsdev/lexbox-ui:${{ inputs.lexbox-api-tag }}
+    - name: Update image ui version
+      if: ${{ steps.ui_image.outcome == 'success' }}
+      uses: mikefarah/yq@0b34c9a00de1c575a34eea05af1d956a525c4fc1
+      with:
+        cmd: yq eval -i '(.images.[] | select(.name == "ghcr.io/sillsdev/lexbox-ui").newTag) = "${{ inputs.lexbox-api-tag }}"' "./deployment/gha/kustomization.yaml"
+    - name: deploy
+      run: |
+        kubectl create namespace languagedepot
+
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.15.0/cert-manager.yaml
+
+        kubectl wait --for=condition=Ready --timeout=90s pod -l 'app in (cert-manager, webhook)' -n cert-manager
+
+        kubectl apply -k ./deployment/gha
+
+        kubectl wait --for=condition=Ready --timeout=120s pod -l 'app.kubernetes.io/component=controller' -n languagedepot
+
+        kubectl wait --for=condition=Ready --timeout=120s pod -l 'app in (lexbox, ui, hg, db)' -n languagedepot
+    - name: forward ingress
+      run: kubectl port-forward service/ingress-nginx-controller 6579:80 -n languagedepot &
+    - name: verify ingress
+      run: curl -v http://localhost:6579
+    - name: build
+      run: dotnet restore LexBoxOnly.slnf && dotnet build --no-restore LexBoxOnly.slnf
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Dotnet test (ces) (ces)
+      env:
+        TEST_SERVER_HOSTNAME: localhost:6579
+        TEST_STANDARD_HG_HOSTNAME: hg.localhost:6579
+        TEST_RESUMABLE_HG_HOSTNAME: resumable.localhost:6579
+        TEST_PROJECT_CODE: sena-3
+        TEST_DEFAULT_PASSWORD: pass
+      run: dotnet test LexBoxOnly.slnf --logger GitHubActions --filter "Category=Integration|Category=FlakyIntegration" --blame-hang-timeout 40m
+    - name: status
+      if: failure()
+      run: |
+        mkdir -p k8s-logs
+
+        for app in lexbox ui hg db; do
+          kubectl describe pods -l "app=${app}" -n languagedepot > k8s-logs/describe-${app}.txt
+          kubectl logs -l "app=${app}" -n languagedepot --prefix --all-containers --tail=-1 > k8s-logs/logs-${app}.txt
+        done
+
+        kubectl logs -l 'app.kubernetes.io/name=ingress-nginx' -n languagedepot --prefix --all-containers --tail=-1 > k8s-logs/logs-ingress.txt
+    - name: upload status
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: k8s-logs
+        path: k8s-logs/*.txt
