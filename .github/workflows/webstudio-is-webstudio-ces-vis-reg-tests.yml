@@ -1,0 +1,39 @@
+name: webstudio-is/webstudio
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  lost-pixel:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://
+      AUTH_SECRET: test
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./.github/actions/ci-setup
+    - run: VISUAL_TESTING=true pnpm storybook:build
+    - name: Lost Pixel
+      uses: lost-pixel/lost-pixel@v3.16.0
+      env:
+        LOST_PIXEL_API_KEY: 8b76db6c-b9f0-46d1-982f-70900a02690a
