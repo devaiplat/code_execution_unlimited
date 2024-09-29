@@ -1,0 +1,487 @@
+name: pyvista/pyvista
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  ALLOW_PLOTTING: true
+  SHELLOPTS: errexit:pipefail
+jobs:
+  macOS:
+    runs-on: macos-12
+    name: Mac OS Unit Testing
+    strategy:
+      matrix:
+        python-version:
+        - 3.9
+        - 3.11
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+        cache-dependency-path: >
+          requirements.txt
+
+          requirements_test.txt
+    - name: Install PyVista
+      run: pip install . --no-deps
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install test dependencies (ces) (ces)
+      run: pip install vtk -r requirements_test.txt
+    - name: Report
+      run: python -c "import pyvista;print(pyvista.Report(gpu=False));from pyvista import examples;print('User data path:', examples.USER_DATA_PATH)"
+    - name: Test Core API (ces)
+      run: pytest -v --ignore=tests/plotting
+    - name: Test Plotting (ces)
+      run: pytest -v tests/plotting --fail_extra_image_cache --generated_image_dir debug_images
+    - name: Upload Generated Images
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug_images-${{ github.job }}-${{ join(matrix.* , '-') }}
+        path: debug_images
+  LinuxConda:
+    runs-on: ubuntu-20.04
+    if: true
+    env:
+      CONDA_ALWAYS_YES: 1
+      conda_env: pyvista-vtk
+      DISPLAY: :99.0
+      PYVISTA_OFF_SCREEN: True
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up headless display
+      uses: pyvista/setup-headless-display-action@v2
+    - name: Cache Conda Packages
+      uses: actions/cache@v4
+      with:
+        path: ~/anaconda3/pkgs
+        key: Conda-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+        restore-keys: >
+          ${{ runner.os }}-conda-
+    - uses: actions/cache@v4
+      with:
+        path: ~/.local/share/pyvista/examples
+        key: Examples-1-${{ hashFiles('*') }}
+        restore-keys: >
+          Examples-1-
+    - name: Install mamba
+      run: |
+        source /usr/share/miniconda/etc/profile.d/conda.sh
+
+        conda config --set channel_priority strict
+
+        conda update -n base conda
+
+        conda install -n base conda-libmamba-solver
+    - name: Workaround for mamba-org/mamba#488
+      run: rm /usr/share/miniconda/pkgs/cache/*.json
+    - name: Create Anaconda environment
+      run: |
+        source /usr/share/miniconda/etc/profile.d/conda.sh
+
+        conda config --add channels conda-forge
+
+        conda env create --quiet -n ${{ env.conda_env }} --file environment.yml --experimental-solver=libmamba
+
+        conda activate ${{ env.conda_env }}
+
+        conda list
+    - name: Install PyVista
+      run: |
+        source /usr/share/miniconda/etc/profile.d/conda.sh
+
+        conda activate ${{ env.conda_env }}
+
+        pip install -e .
+
+        which python
+
+        python -c "import pyvista; print(pyvista.Report(gpu=False))"
+
+        python -c "from pyvista import examples; print(examples.USER_DATA_PATH)"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test Core API (ces) (ces)
+      run: |
+        source /usr/share/miniconda/etc/profile.d/conda.sh
+
+        conda activate ${{ env.conda_env }}
+
+        pip install -r requirements_test.txt
+
+        pytest -v --ignore=tests/plotting
+    - name: Test Core Plotting (ces)
+      run: |
+        source /usr/share/miniconda/etc/profile.d/conda.sh
+
+        conda activate ${{ env.conda_env }}
+
+        pytest -v tests/plotting --cov-report html --fail_extra_image_cache --generated_image_dir debug_images
+    - name: Upload Generated Images
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.job }}
+        path: debug_images
+  Linux:
+    name: Linux Unit Testing
+    runs-on: ubuntu-20.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - python-version: 3.8
+          vtk-version: 9.0.3
+          numpy-version: 1.23
+        - python-version: 3.9
+          vtk-version: 9.1
+          numpy-version: 1.26
+        - python-version: 3.10
+          vtk-version: 9.2.2
+          numpy-version: latest
+        - python-version: 3.11
+          vtk-version: 9.2.6
+          numpy-version: latest
+        - python-version: 3.12
+          vtk-version: latest
+          numpy-version: latest
+        - python-version: 3.12
+          vtk-version: latest
+          numpy-version: nightly
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+        cache-dependency-path: >
+          requirements.txt
+
+          requirements_test.txt
+    - uses: actions/cache@v4
+      with:
+        path: ~/.local/share/pyvista/examples
+        key: Examples-1-${{ hashFiles('*') }}
+        restore-keys: >
+          Examples-1-
+    - name: Build wheel and install pyvista
+      run: |
+        pip install build
+
+        python -m build --wheel
+
+        pip install dist/pyvista*.whl
+    - name: Set up vtk
+      if: ${{ matrix.vtk-version != 'latest' }}
+      run: pip install vtk==${{ matrix.vtk-version }}
+    - name: Software Report (Core Dependencies)
+      run: python -c "import pyvista; print(pyvista.Report());"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install Testing Requirements (ces) (ces)
+      run: pip install -r requirements_test.txt
+    - name: Set up numpy
+      if: ${{ matrix.numpy-version != 'latest' && matrix.numpy-version != 'nightly' }}
+      run: pip install 'numpy~=${{ matrix.numpy-version }}.0'
+    - name: Limit Matplotlib for VTK<9.2.2
+      if: ${{ matrix.vtk-version == '9.1' || matrix.vtk-version == '9.0.3' }}
+      run: pip install 'matplotlib<3.6'
+    - name: Install latest numpy 2.0 beta/rc (ces)
+      if: ${{ matrix.numpy-version == 'nightly' }}
+      run: |
+        pip uninstall numpy matplotlib -y
+
+        pip install --pre --no-deps -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple matplotlib
+
+        pip install --pre --no-deps -i https://pypi.anaconda.org/scientific-python-nightly-wheels/simple numpy
+    - name: Core Testing (no GL) (ces)
+      run: python -m pytest --cov=pyvista -v tests/core tests/examples
+    - uses: awalsh128/cache-apt-pkgs-action@v1.1.3
+      with:
+        packages: libgl1-mesa-glx xvfb
+        version: 3.0
+    - name: Plotting Testing (uses GL) (ces)
+      run: xvfb-run -a python -m pytest --cov=pyvista --cov-append --cov-report=xml --fail_extra_image_cache -v --ignore=tests/core --ignore=tests/examples --generated_image_dir debug_images
+    - name: Upload Generated Images
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug_images-${{ github.job }}-${{ join(matrix.* , '-') }}
+        path: debug_images
+    - name: Software Report
+      if: always()
+      run: |
+        xvfb-run -a python -c "import pyvista; print(pyvista.Report()); from pyvista import examples; print('User data path:', examples.USER_DATA_PATH)"
+
+        which python
+
+        pip list
+    - uses: codecov/codecov-action@v4
+      name: Upload coverage to CodeCov
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    - name: Check package
+      run: |
+        pip install build twine
+
+        python -m build
+
+        twine check --strict dist/*
+    - name: Upload to PyPi
+      if: matrix.python-version == '3.9' && startsWith(github.ref, 'refs/tags/v')
+      run: |
+        twine upload --skip-existing dist/pyvista*
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        TWINE_REPOSITORY_URL: https://upload.pypi.org/legacy/
+  windows:
+    name: Windows Unit Testing
+    runs-on: windows-latest
+    env:
+      CI_WINDOWS: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+        - 3.8
+        - 3.9
+        - 3.10
+        - 3.11
+        - 3.12
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+        cache-dependency-path: >
+          requirements.txt
+
+          requirements_test.txt
+    - name: Set up headless display
+      uses: pyvista/setup-headless-display-action@v2
+    - name: Install PyVista
+      run: pip install . --no-deps
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install test dependencies (ces) (ces)
+      run: pip install vtk -r requirements_test.txt
+    - name: Report
+      run: python -c "import pyvista; print(pyvista.Report(gpu=False)); from pyvista import examples; print('User data path:', examples.USER_DATA_PATH)"
+    - name: Set example data path as env variable
+      run: |
+        chcp 65001 #set code page to utf-8
+
+        echo ("PYVISTA_EXAMPLE_DATA_PATH=" + $(python -c "import pyvista; from pyvista import examples; print(examples.USER_DATA_PATH)")) >> $env:GITHUB_ENV
+    - name: Cache example data
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.PYVISTA_EXAMPLE_DATA_PATH }}
+        key: Examples-1-${{ hashFiles('*') }}
+        restore-keys: >
+          Examples-1-
+    - name: Test Core API (ces)
+      run: python -m pytest -v --ignore=tests/plotting
+    - name: Test Plotting (ces)
+      run: python -m pytest -v tests/plotting --fail_extra_image_cache --generated_image_dir debug_images
+    - name: Upload Generated Images
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug_images-${{ github.job }}-${{ join(matrix.* , '-') }}
+        path: debug_images
