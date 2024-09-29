@@ -1,0 +1,55 @@
+name: E3SM-Project/E3SM
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  ci:
+    if: true
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+        - SMS_D_Ln5_P4.ne4pg2_oQU480.F2010.ghci-oci_gnu
+        - ERS_Ld5_P4.ne4pg2_oQU480.F2010.ghci-oci_gnu.eam-wcprod_F2010
+        - SMS_D_Ln5_P4.ne4pg2_oQU480.F2010-SCREAMv1-MPASSI.ghci-oci_gnu
+        - ERS_Ld5_P4.ne4pg2_oQU480.F2010-SCREAMv1-MPASSI.ghci-oci_gnu.eamxx-prod
+    container:
+      image: ghcr.io/e3sm-project/containers-ghci:ghci-0.1.0
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        show-progress: false
+        submodules: recursive
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: CIME
+      working-directory: cime/scripts
+      run: |
+        ./create_test ${{ matrix.test }} --wait --debug
+    - name: Artifacts
+      uses: actions/upload-artifact@v4
+      if: ${{ always() }}
+      with:
+        name: ${{ matrix.test }}
+        path: >
+          /projects/e3sm/scratch/${{ matrix.test }}*/TestStatus.log
+
+          /projects/e3sm/scratch/${{ matrix.test }}*/bld/*.bldlog.*
+
+          /projects/e3sm/scratch/${{ matrix.test }}*/run/*.log.*
+
+          /projects/e3sm/scratch/${{ matrix.test }}*/run/*.cprnc.out
