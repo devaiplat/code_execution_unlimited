@@ -1,0 +1,93 @@
+name: concrete-utopia/utopia
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test-editor-karma-shard:
+    name: Test Editor PR – Karma tests (Shard ${{ inputs.shard_number }})
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    env:
+      UTOPIA_SHA: ${{ github.sha }}
+    steps:
+    - name: Cancel existing runs on this branch
+      uses: fauguste/auto-cancellation-running-action@0.1.4
+      with:
+        githubToken: ${{ secrets.GITHUB_TOKEN }}
+    - name: Check out the repo
+      uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Cache editor test result (ces) (ces)
+      id: cache-editor-tests
+      uses: actions/cache@v2
+      with:
+        path: editor/lib
+        key: ${{ runner.os }}-editor-karma-tests-shard-${{ inputs.shard_number }}-${{ inputs.branch }}-${{ hashFiles('editor/src/**') }}-${{ hashFiles('utopia-api/src/**') }}-${{ hashFiles('editor/package.json') }}-${{ hashFiles('utopia-api/package.json') }}
+    - name: Cache .pnpm-store
+      uses: actions/cache@v2
+      with:
+        path: ${{ inputs.pnpm-store-path }}
+        key: ${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}-captured-location
+    - name: Install nix
+      uses: cachix/install-nix-action@v12
+      with:
+        nix_path: nixpkgs=https://github.com/NixOS/nixpkgs/archive/6120ac5cd201f6cb593d1b80e861be0342495be9.tar.gz
+    - name: Run the Karma tests (ces)
+      if: steps.cache-editor-tests.outputs.cache-hit != 'true'
+      run: nix-shell --arg includeServerBuildSupport false --arg includeRunLocallySupport false --run check-editor-karma-ci-shard-${{ inputs.shard_number }}
