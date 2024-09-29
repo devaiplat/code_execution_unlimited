@@ -1,0 +1,45 @@
+name: woowacourse-teams/2023-yozm-cafe
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  deploy:
+    defaults:
+      run:
+        working-directory: client
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: true
+    steps:
+    - name: Use repository source
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Use node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+    - name: Install dependencies
+      uses: cypress-io/github-action@v5
+      with:
+        working-directory: client
+        install-command: yarn --frozen-lockfile
+        parallel: true
+        build: yarn build
+        start: yarn start
+        wait-on: http://localhost:3000
+        command: yarn cypress:run
