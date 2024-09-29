@@ -1,0 +1,37 @@
+name: cds-snc/platform-forms-client
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  COGNITO_APP_CLIENT_ID: ${{secrets.PRODUCTION_COGNITO_APP_CLIENT_ID}}
+  COGNITO_USER_POOL_ID: ${{ secrets.PRODUCTION_COGNITO_USER_POOL_ID}}
+jobs:
+  test-container:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Build Container
+      run: |
+        docker build -t base \
+
+        --build-arg COGNITO_APP_CLIENT_ID=$COGNITO_APP_CLIENT_ID \
+
+        --build-arg COGNITO_USER_POOL_ID=$COGNITO_USER_POOL_ID . \
+
+        --build-arg INDEX_SITE=true
