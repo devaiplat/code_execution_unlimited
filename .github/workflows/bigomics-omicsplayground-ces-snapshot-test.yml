@@ -1,0 +1,111 @@
+name: bigomics/omicsplayground
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  DOCKER_TAG: bigomics/omicsplayground:latest
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Shinytest docker (ces) (ces)
+      id: test-snapshot
+      run: |
+        docker build --build-arg GITHUB_SHA=${{ github.sha }} --build-arg HEAD_REF=${{ github.head_ref }} -t ${{ env.DOCKER_TAG }} -f ./.github/workflows/snapshot-test-resources/Dockerfile .
+
+        docker run --name run_tests bigomics/omicsplayground:latest
+
+        docker cp run_tests:omicsplayground/tests .
+    - name: Upload snapshots as artifact
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: testthat-snapshots
+        path: ./tests/*
+        if-no-files-found: ignore
+    - name: Configure Git
+      if: always()
+      run: |
+        git config --local user.name "$GITHUB_ACTOR"
+
+        git config --local user.email "$GITHUB_ACTOR@users.noreply.github.com"
+    - name: Commit and push snapshots
+      if: always()
+      run: |
+        cd ${{ github.workspace }}
+
+        if [[ `git status --porcelain` ]]; then  
+          git checkout -b "${GITHUB_HEAD_REF}"
+          git add ./tests/*
+          git fetch origin "${GITHUB_HEAD_REF}"
+          git commit -m "Snapshot test failed: use snapshot_review('snapshot/') (GHA)"
+          git push --force-with-lease origin "${GITHUB_HEAD_REF}"
+          echo "snapshots pushed to repo"
+        fi
+    - name: Fail GHA if snapshot test failed (ces)
+      if: always()
+      run: |
+        if [[ "${{ steps.test-snapshot.outputs.test_result }}" == "FALSE" ]]; then
+          exit 1
+        fi
