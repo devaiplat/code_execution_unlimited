@@ -1,0 +1,149 @@
+name: realm/realm-js
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+defaults:
+  run:
+    working-directory: install-tests/react-native
+jobs:
+  install:
+    name: ${{ matrix.platform == 'ios' && 'iOS' || 'Android' }} realm@${{ matrix.realm-version }}, react-native@${{ matrix.react-native-version }} new architecture ${{ matrix.new-architecture && 'enabled' || 'disabled' }} running ${{ matrix.engine }}
+    runs-on: ${{ matrix.platform == 'ios' && 'macos-13-xlarge' || 'macos-13-large' }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+        - ios
+        - android
+        realm-version:
+        - latest
+        react-native-version:
+        - latest
+        - next
+        new-architecture:
+        - true
+        - false
+        engine:
+        - jsc
+        - hermes
+        xcode:
+        - 15.0
+        node:
+        - 18
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node }}
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: install-test-${{ matrix.platform }}-r@${{ matrix.realm-version }}-rn@${{ matrix.react-native-version }}-${{ matrix.new-architecture && 'new' || 'old' }}-arch
+        max-size: 2.0G
+    - name: Prepend ccache executables to the PATH
+      run: echo "/usr/local/opt/ccache/libexec" >> $GITHUB_PATH
+    - name: Configure ccache
+      run: ccache --set-config="compiler_check=content"
+    - uses: futureware-tech/simulator-action@v2
+      if: ${{ matrix.platform == 'ios' }}
+      with:
+        model: iPhone 14
+    - name: Install dependencies of the CLI
+      run: npm ci
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Initialize app
+      run: npm run init -- --skip-bundle-install --skip-pod-install --realm-version ${{ matrix.realm-version }} --react-native-version ${{ matrix.react-native-version }} --engine ${{ matrix.engine }} --new-architecture ${{ matrix.new-architecture }}
+    - if: ${{ matrix.platform == 'ios' }}
+      run: pod install
+      working-directory: install-tests/react-native/app/ios
+    - uses: actions/setup-java@v3
+      if: ${{ matrix.platform == 'android' }}
+      with:
+        distribution: zulu
+        java-version: 17
+    - name: Run test (iOS) (ces)
+      if: ${{ matrix.platform == 'ios' }}
+      run: npm test -- --platform ios
+    - name: Run test (Android) (ces)
+      if: ${{ matrix.platform == 'android' }}
+      uses: reactivecircus/android-emulator-runner@v2
+      timeout-minutes: 30
+      with:
+        api-level: 29
+        target: google_apis
+        script: npm test -- --platform android
+        emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+        disable-animations: true
+        working-directory: install-tests/react-native
+  slack-workflow-status:
+    if: true
+    name: Post Workflow Status To Slack
+    needs: install
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+    - name: Slack Workflow Notification
+      uses: Gamesight/slack-workflow-status@master
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        slack_webhook_url: ${{ github.event.schedule && secrets.SLACK_TEAM_WEBHOOK || secrets.SLACK_TEST_WEBHOOK }}
+        include_jobs: true
+        include_commit_message: false
