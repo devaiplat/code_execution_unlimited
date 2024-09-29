@@ -1,0 +1,155 @@
+name: trezor/trezor-suite
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  build:
+    if: true
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup node
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: .nvmrc
+        cache: yarn
+        cache-dependency-path: '**/yarn.lock'
+    - run: |
+        echo -e "\nenableScripts: false" >> .yarnrc.yml
+    - run: yarn workspaces focus @trezor/connect-iframe @trezor/connect-web
+    - run: yarn workspace @trezor/connect-iframe build
+    - run: yarn workspace @trezor/connect-web build
+    - name: Upload build connect-web
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifact-connect-web
+        path: packages/connect-web/build
+    - name: Upload build connect-iframe
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifact-connect-iframe
+        path: packages/connect-iframe/build
+  set-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      dailyMatrix: ${{ steps.set-matrix-daily.outputs.dailyMatrix }}
+      otherDevicesMatrix: ${{ steps.set-matrix-other-devices.outputs.otherDevicesMatrix }}
+      legacyFirmwareMatrix: ${{ steps.set-matrix-legacy-firmware.outputs.legacyFirmwareMatrix }}
+      canaryFirmwareMatrix: ${{ steps.set-matrix-canary-firmware.outputs.canaryFirmwareMatrix }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set daily matrix
+      id: set-matrix-daily
+      run: echo "dailyMatrix=$(node ./scripts/ci/connect-test-matrix-generator.js daily)" >> $GITHUB_OUTPUT
+    - name: Set legacy devices matrix
+      id: set-matrix-legacy-firmware
+      run: echo "legacyFirmwareMatrix=$(node ./scripts/ci/connect-test-matrix-generator.js legacyFirmware)" >> $GITHUB_OUTPUT
+    - name: Set canary devices matrix
+      id: set-matrix-canary-firmware
+      run: echo "canaryFirmwareMatrix=$(node ./scripts/ci/connect-test-matrix-generator.js canaryFirmware)" >> $GITHUB_OUTPUT
+    - name: Set other devices matrix
+      id: set-matrix-other-devices
+      run: echo "otherDevicesMatrix=$(node ./scripts/ci/connect-test-matrix-generator.js otherDevices)" >> $GITHUB_OUTPUT
+  connect-PR:
+    needs:
+    - build
+    - set-matrix
+    name: PR-${{ matrix.name }}
+    uses: ./.github/workflows/template-connect-test-params.yml
+    with:
+      testPattern: ${{ matrix.pattern }}
+      methods: ${{ matrix.methods }}
+      testsFirmware: ${{ matrix.firmware }}
+      testDescription: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.dailyMatrix) }}
+  connect-randomized-order:
+    needs:
+    - build
+    - set-matrix
+    if: true
+    name: randomized-${{ matrix.name }}
+    uses: ./.github/workflows/template-connect-test-params.yml
+    with:
+      testPattern: ${{ matrix.pattern }}
+      methods: ${{ matrix.methods }}
+      testsFirmware: ${{ matrix.firmware }}
+      testDescription: ${{ matrix.name }}-${{ matrix.firmware }}
+      testRandomizedOrder: true
+      webEnvironment: false
+      nodeEnvironment: true
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.dailyMatrix) }}
+  connect-legacy-firmware:
+    needs:
+    - build
+    - set-matrix
+    if: true
+    name: legacy-${{ matrix.name }}
+    uses: ./.github/workflows/template-connect-test-params.yml
+    with:
+      testPattern: ${{ matrix.pattern }}
+      methods: ${{ matrix.methods }}
+      testsFirmware: ${{ matrix.firmware }}
+      testDescription: ${{ matrix.name }}-${{ matrix.firmware }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.legacyFirmwareMatrix) }}
+  connect-canary-firmware:
+    needs:
+    - build
+    - set-matrix
+    if: true
+    name: canary-${{ matrix.name }}
+    uses: ./.github/workflows/template-connect-test-params.yml
+    with:
+      testPattern: ${{ matrix.pattern }}
+      methods: ${{ matrix.methods }}
+      testsFirmware: ${{ matrix.firmware }}
+      testDescription: ${{ matrix.name }}-${{ matrix.firmware }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.canaryFirmwareMatrix) }}
+  connect-other-devices:
+    needs:
+    - build
+    - set-matrix
+    if: true
+    name: other-devices-${{ matrix.name }}-${{ matrix.model }}
+    uses: ./.github/workflows/template-connect-test-params.yml
+    with:
+      testPattern: ${{ matrix.pattern }}
+      methods: ${{ matrix.methods }}
+      testsFirmware: ${{ matrix.firmware }}
+      testFirmwareModel: ${{ matrix.model }}
+      nodeEnvironment: true
+      webEnvironment: false
+      testDescription: ${{ matrix.name }}-${{ matrix.firmware }}-${{ matrix.model }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.otherDevicesMatrix) }}
