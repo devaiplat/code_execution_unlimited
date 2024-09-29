@@ -1,0 +1,926 @@
+name: tailscale/tailscale
+env:
+  TS_FUZZ_CURRENTLY_BROKEN: false
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-$${{ github.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  race-root-integration:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - shard: 1/4
+        - shard: 2/4
+        - shard: 3/4
+        - shard: 4/4
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: build test wrapper (ces) (ces)
+      run: ./tool/go build -o /tmp/testwrapper ./cmd/testwrapper
+    - name: integration tests as root (ces)
+      run: PATH=$PWD/tool:$PATH /tmp/testwrapper -exec "sudo -E" -race ./tstest/integration/
+      env:
+        TS_TEST_SHARD: ${{ matrix.shard }}
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - goarch: amd64
+          coverflags: -coverprofile=/tmp/coverage.out
+        - goarch: amd64
+          buildflags: -race
+          shard: 1/3
+        - goarch: amd64
+          buildflags: -race
+          shard: 2/3
+        - goarch: amd64
+          buildflags: -race
+          shard: 3/3
+        - goarch: 386
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Restore Cache
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: >
+          ~/.cache/go-build
+
+          ~/go/pkg/mod/cache
+
+          ~\AppData\Local\go-build
+        key: ${{ github.job }}-${{ runner.os }}-${{ matrix.goarch }}-${{ matrix.buildflags }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+        restore-keys: >
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goarch }}-${{ matrix.buildflags }}-go-2-${{ hashFiles('**/go.sum') }}
+
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goarch }}-${{ matrix.buildflags }}-go-2-
+    - name: build all
+      if: matrix.buildflags == ''
+      run: ./tool/go build ${{matrix.buildflags}} ./...
+      env:
+        GOARCH: ${{ matrix.goarch }}
+    - name: build variant CLIs
+      if: matrix.buildflags == ''
+      run: |
+        export TS_USE_TOOLCHAIN=1
+
+        ./build_dist.sh --extra-small ./cmd/tailscaled
+
+        ./build_dist.sh --box ./cmd/tailscaled
+
+        ./build_dist.sh --extra-small --box ./cmd/tailscaled
+
+        rm -f tailscaled
+      env:
+        GOARCH: ${{ matrix.goarch }}
+    - name: get qemu
+      if: matrix.goarch == 'amd64' && matrix.buildflags == ''
+      run: |
+        sudo apt-get -y update
+
+        sudo apt-get -y install qemu-user
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: build test wrapper (ces) (ces)
+      run: ./tool/go build -o /tmp/testwrapper ./cmd/testwrapper
+    - name: test all (ces)
+      run: NOBASHDEBUG=true PATH=$PWD/tool:$PATH /tmp/testwrapper ${{matrix.coverflags}} ./... ${{matrix.buildflags}}
+      env:
+        GOARCH: ${{ matrix.goarch }}
+        TS_TEST_SHARD: ${{ matrix.shard }}
+    - name: Publish to coveralls.io
+      if: matrix.coverflags != ''
+      uses: shogo82148/actions-goveralls@v1
+      with:
+        path-to-profile: /tmp/coverage.out
+    - name: bench all
+      run: ./tool/go test ${{matrix.buildflags}} -bench=. -benchtime=1x -run=^$ $(for x in $(git grep -l "^func Benchmark" | xargs dirname | sort | uniq); do echo "./$x"; done)
+      env:
+        GOARCH: ${{ matrix.goarch }}
+    - name: check that no tracked files changed
+      run: git diff --no-ext-diff --name-only --exit-code || (echo "Build/test modified the files above."; exit 1)
+    - name: check that no new files were added
+      run: |
+        # Note: The "error: pathspec..." you see below is normal!
+
+        # In the success case in which there are no new untracked files,
+
+        # git ls-files complains about the pathspec not matching anything.
+
+        # That's OK. It's not worth the effort to suppress. Please ignore it.
+
+        if git ls-files --others --exclude-standard --directory --no-empty-directory --error-unmatch -- ':/*'
+
+        then
+          echo "Build/test created untracked files in the repo (file names above)."
+          exit 1
+        fi
+  windows:
+    runs-on: windows-2022
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Go
+      uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      with:
+        go-version-file: go.mod
+        cache: false
+    - name: Restore Cache
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: >
+          ~/.cache/go-build
+
+          ~/go/pkg/mod/cache
+
+          ~\AppData\Local\go-build
+        key: ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+        restore-keys: >
+          ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}
+
+          ${{ github.job }}-${{ runner.os }}-go-2-
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: test (ces) (ces)
+      run: go run ./cmd/testwrapper ./...
+    - name: bench all
+      run: go test ./... -bench . -benchtime 1x -run "^$"
+  privileged:
+    runs-on: ubuntu-22.04
+    container:
+      image: golang:latest
+      options: --privileged
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: chown
+      run: chown -R $(id -u):$(id -g) $PWD
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: privileged tests (ces) (ces)
+      run: ./tool/go test ./util/linuxfw ./derp/xdp
+  vm:
+    runs-on:
+    - self-hosted
+    - linux
+    - vm
+    if: true
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run VM tests (ces) (ces)
+      run: ./tool/go test ./tstest/integration/vms -v -no-s3 -run-vm-tests -run=TestRunUbuntu2004
+      env:
+        HOME: /var/lib/ghrunner/home
+        TMPDIR: /tmp
+        XDG_CACHE_HOME: /var/lib/ghrunner/cache
+  race-build:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: build all
+      run: ./tool/go install -race ./cmd/...
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: build tests (ces) (ces)
+      run: ./tool/go test -race -exec=true ./...
+  cross:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - goos: linux
+          goarch: arm64
+        - goos: linux
+          goarch: 386
+        - goos: linux
+          goarch: loong64
+        - goos: linux
+          goarch: arm
+          goarm: 5
+        - goos: linux
+          goarch: arm
+          goarm: 7
+        - goos: darwin
+          goarch: amd64
+        - goos: darwin
+          goarch: arm64
+        - goos: windows
+          goarch: amd64
+        - goos: windows
+          goarch: arm64
+        - goos: freebsd
+          goarch: amd64
+        - goos: openbsd
+          goarch: amd64
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Restore Cache
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: >
+          ~/.cache/go-build
+
+          ~/go/pkg/mod/cache
+
+          ~\AppData\Local\go-build
+        key: ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+        restore-keys: >
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-${{ hashFiles('**/go.sum') }}
+
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-
+    - name: build all
+      run: ./tool/go build ./cmd/...
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        GOARM: ${{ matrix.goarm }}
+        CGO_ENABLED: 0
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: build tests (ces) (ces)
+      run: ./tool/go test -exec=true ./...
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        CGO_ENABLED: 0
+  ios:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: build some
+      run: ./tool/go build ./ipn/... ./wgengine/ ./types/... ./control/controlclient
+      env:
+        GOOS: ios
+        GOARCH: arm64
+  crossmin:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - goos: plan9
+          goarch: amd64
+        - goos: aix
+          goarch: ppc64
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Restore Cache
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: >
+          ~/.cache/go-build
+
+          ~/go/pkg/mod/cache
+
+          ~\AppData\Local\go-build
+        key: ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+        restore-keys: >
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-${{ hashFiles('**/go.sum') }}
+
+          ${{ github.job }}-${{ runner.os }}-${{ matrix.goos }}-${{ matrix.goarch }}-go-2-
+    - name: build core
+      run: ./tool/go build ./cmd/tailscale ./cmd/tailscaled
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        GOARM: ${{ matrix.goarm }}
+        CGO_ENABLED: 0
+  android:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: build some
+      run: ./tool/go install ./net/netns ./ipn/ipnlocal ./wgengine/magicsock/ ./wgengine/ ./wgengine/router/ ./wgengine/netstack ./util/dnsname/ ./ipn/ ./net/netmon ./wgengine/router/ ./tailcfg/ ./types/logger/ ./net/dns ./hostinfo ./version
+      env:
+        GOOS: android
+        GOARCH: arm64
+  wasm:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Restore Cache
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: >
+          ~/.cache/go-build
+
+          ~/go/pkg/mod/cache
+
+          ~\AppData\Local\go-build
+        key: ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+        restore-keys: >
+          ${{ github.job }}-${{ runner.os }}-go-2-${{ hashFiles('**/go.sum') }}
+
+          ${{ github.job }}-${{ runner.os }}-go-2-
+    - name: build tsconnect client
+      run: ./tool/go build ./cmd/tsconnect/wasm ./cmd/tailscale/cli
+      env:
+        GOOS: js
+        GOARCH: wasm
+    - name: build tsconnect server
+      run: |
+        ./tool/go run ./cmd/tsconnect --fast-compression build
+
+        ./tool/go run ./cmd/tsconnect --fast-compression build-pkg
+  tailscale_go:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: test tailscale_go (ces) (ces)
+      run: ./tool/go test -tags=tailscale_go,ts_enable_sockstats ./net/sockstats/...
+  fuzz:
+    if: true
+    runs-on: ubuntu-22.04
+    steps:
+    - name: build fuzzers
+      id: build
+      uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@master
+      continue-on-error: true
+      with:
+        oss-fuzz-project-name: tailscale
+        dry-run: false
+        language: go
+    - name: report unexpectedly broken fuzz build
+      if: steps.build.outcome == 'failure' && env.TS_FUZZ_CURRENTLY_BROKEN != 'true'
+      run: |
+        echo "fuzzer build failed, see above for why"
+
+        echo "if the failure is due to OSS-Fuzz not being on the latest Go yet,"
+
+        echo "set TS_FUZZ_CURRENTLY_BROKEN=true in .github/workflows/test.yml"
+
+        echo "to temporarily disable fuzzing until OSS-Fuzz works again."
+
+        exit 1
+    - name: report unexpectedly working fuzz build
+      if: steps.build.outcome == 'success' && env.TS_FUZZ_CURRENTLY_BROKEN == 'true'
+      run: |
+        echo "fuzzer build succeeded, but we expect it to be broken"
+
+        echo "please set TS_FUZZ_CURRENTLY_BROKEN=false in .github/workflows/test.yml"
+
+        echo "to reenable fuzz testing"
+
+        exit 1
+    - name: run fuzzers
+      id: run
+      if: steps.build.outcome == 'success'
+      uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@master
+      with:
+        oss-fuzz-project-name: tailscale
+        fuzz-seconds: 300
+        dry-run: false
+        language: go
+    - name: Set artifacts_path in env (workaround for actions/upload-artifact#176)
+      if: steps.run.outcome != 'success' && steps.build.outcome == 'success'
+      run: |
+        echo "artifacts_path=$(realpath .)" >> $GITHUB_ENV
+    - name: upload crash
+      uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+      if: steps.run.outcome != 'success' && steps.build.outcome == 'success'
+      with:
+        name: artifacts
+        path: ${{ env.artifacts_path }}/out/artifacts
+  depaware:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: check depaware
+      run: |
+        export PATH=$(./tool/go env GOROOT)/bin:$PATH
+
+        find . -name 'depaware.txt' | xargs -n1 dirname | xargs ./tool/go run github.com/tailscale/depaware --check
+  go_generate:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: check that 'go generate' is clean
+      run: |
+        pkgs=$(./tool/go list ./... | grep -Ev 'dnsfallback|k8s-operator|xdp')
+
+        ./tool/go generate $pkgs
+
+        echo
+
+        echo
+
+        git diff --name-only --exit-code || (echo "The files above need updating. Please run 'go generate'."; exit 1)
+  go_mod_tidy:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: check that 'go mod tidy' is clean
+      run: |
+        ./tool/go mod tidy
+
+        echo
+
+        echo
+
+        git diff --name-only --exit-code || (echo "Please run 'go mod tidy'."; exit 1)
+  licenses:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: check licenses
+      run: ./scripts/check_license_headers.sh .
+  staticcheck:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        goos:
+        - linux
+        - windows
+        - darwin
+        goarch:
+        - amd64
+        include:
+        - goos: windows
+          goarch: 386
+    steps:
+    - name: checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: install staticcheck
+      run: GOBIN=~/.local/bin ./tool/go install honnef.co/go/tools/cmd/staticcheck
+    - name: run staticcheck
+      run: |
+        export GOROOT=$(./tool/go env GOROOT)
+
+        export PATH=$GOROOT/bin:$PATH
+
+        staticcheck -- $(./tool/go list ./... | grep -v tempfork)
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+  notify_slack:
+    if: true
+    needs:
+    - android
+    - test
+    - windows
+    - vm
+    - cross
+    - ios
+    - wasm
+    - tailscale_go
+    - fuzz
+    - depaware
+    - go_generate
+    - go_mod_tidy
+    - licenses
+    - staticcheck
+    runs-on: ubuntu-22.04
+    steps:
+    - name: notify
+      if: failure() && github.event_name == 'push'
+      uses: slackapi/slack-github-action@37ebaef184d7626c5f204ab8d3baff4262dd30f0
+      with:
+        payload: >
+          {
+            "attachments": [{
+              "title": "Failure: ${{ github.workflow }}",
+              "title_link": "https://github.com/${{ github.repository }}/commit/${{ github.sha }}/checks",         
+              "text": "${{ github.repository }}@${{ github.ref_name }}: <https://github.com/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>",
+              "fields": [{ "value": ${{ toJson(github.event.head_commit.message) }}, "short": false }],
+              "footer": "${{ github.event.head_commit.committer.name }} at ${{ github.event.head_commit.timestamp }}",
+              "color": "danger"
+            }]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+  check_mergeability:
+    if: true
+    runs-on: ubuntu-22.04
+    needs:
+    - android
+    - test
+    - windows
+    - vm
+    - cross
+    - ios
+    - wasm
+    - tailscale_go
+    - fuzz
+    - depaware
+    - go_generate
+    - go_mod_tidy
+    - licenses
+    - staticcheck
+    steps:
+    - name: Decide if change is okay to merge
+      if: github.event_name != 'push'
+      uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe
+      with:
+        jobs: ${{ toJSON(needs) }}
