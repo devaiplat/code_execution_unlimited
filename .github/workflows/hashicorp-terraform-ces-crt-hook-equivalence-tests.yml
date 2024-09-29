@@ -1,0 +1,56 @@
+name: hashicorp/terraform
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: write
+jobs:
+  parse-metadata:
+    name: Parse metadata.json
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      target-branch: ${{ steps.parse.outputs.target-branch }}
+    steps:
+    - name: parse
+      id: parse
+      env:
+        METADATA_PAYLOAD: ${{ toJSON(github.event.client_payload.payload) }}
+      run: |
+        VERSION=$(echo ${METADATA_PAYLOAD} | jq -r '.version')
+
+        TARGET_BRANCH=$(./.github/scripts/equivalence-test.sh get-target-branch "$VERSION")
+
+
+        echo "target-branch=$TARGET_BRANCH" >> "GITHUB_OUTPUT"
+
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+  run-equivalence-tests:
+    runs-on: ubuntu-latest
+    name: Run equivalence tests
+    needs:
+    - parse-metadata
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - uses: ./.github/actions/equivalence-test
+      with:
+        target-terraform-version: ${{ needs.parse-metadata.outputs.version }}
+        target-terraform-branch: ${{ needs.parse-metadata.outputs.target-branch }}
+        target-equivalence-test-version: 0.3.0
+        target-os: linux
+        target-arch: amd64
