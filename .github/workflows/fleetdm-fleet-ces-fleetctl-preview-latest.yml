@@ -1,0 +1,85 @@
+name: fleetdm/fleet
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id}}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+permissions:
+  contents: read
+jobs:
+  test-preview:
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142
+      with:
+        egress-policy: audit
+    - name: Checkout Code
+      uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Go
+      uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe
+      with:
+        go-version-file: go.mod
+    - name: Build Fleetctl
+      run: make fleetctl
+    - name: Run fleetctl preview
+      run: |
+        ./build/fleetctl preview \
+          --preview-config-path ./tools/osquery/in-a-box \
+          --std-query-lib-file-path $(pwd)/docs/01-Using-Fleet/standard-query-library/standard-query-library.yml
+        sleep 10
+
+        ./build/fleetctl get hosts | tee hosts.txt
+
+        [ $( cat hosts.txt | grep online | wc -l) -eq 9 ]
+    - name: Get fleet logs
+      if: always()
+      run: |
+        FLEET_LICENSE_KEY=foo docker compose -f ~/.fleet/preview/docker-compose.yml logs fleet01 fleet02 > fleet-logs.txt
+
+        # Copying logs, otherwise the upload-artifact action uploads the logs in a hidden folder (.fleet)
+
+        # Old location of orbit logs before v4.43.0
+
+        cp ~/.fleet/preview/orbit.log orbit.log || true
+
+        # New location of orbit logs since v4.43.0
+
+        cp ~/.fleet/preview/orbit/orbit.log orbit.log || true
+
+        cp -r ~/.fleet/preview/logs osquery_result_status_logs
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce
+      with:
+        name: ${{ matrix.os }}-log
+        path: >
+          fleet-logs.txt
+
+          orbit.log
+
+          osquery_result_status_logs
