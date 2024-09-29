@@ -1,0 +1,125 @@
+name: wp-media/wp-rocket
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  run:
+    runs-on: ${{ matrix.operating-system }}
+    strategy:
+      fail-fast: true
+      matrix:
+        operating-system:
+        - ubuntu-latest
+        php-versions:
+        - 7.3
+        - 7.4
+        wp-versions:
+        - 5.8
+    name: WP ${{ matrix.wp-versions }} with PHP ${{ matrix.php-versions }} on ${{ matrix.operating-system }}.
+    env:
+      WP_TESTS_DIR: /tmp/tests/phpunit
+      WP_CORE_DIR: /tmp/wordpress-develop
+      ROCKETCDN_EMAIL: ${{ secrets.ROCKETCDN_EMAIL }}
+      ROCKETCDN_PWD: ${{ secrets.ROCKETCDN_PWD }}
+      ROCKETCDN_TOKEN: ${{ secrets.ROCKETCDN_TOKEN }}
+      ROCKETCDN_URL: ${{ secrets.ROCKETCDN_URL }}
+      ROCKETCDN_WEBSITE_ID: ${{ secrets.ROCKETCDN_WEBSITE_ID }}
+      ROCKET_EMAIL: ${{ secrets.ROCKET_EMAIL }}
+      ROCKET_KEY: ${{ secrets.ROCKET_KEY }}
+      ROCKET_CLOUDFLARE_API_KEY: ${{ secrets.ROCKET_CLOUDFLARE_API_KEY }}
+      ROCKET_CLOUDFLARE_EMAIL: ${{ secrets.ROCKET_CLOUDFLARE_EMAIL }}
+      ROCKET_CLOUDFLARE_SITE_URL: ${{ secrets.ROCKET_CLOUDFLARE_SITE_URL }}
+      ROCKET_CLOUDFLARE_ZONE_ID: ${{ secrets.ROCKET_CLOUDFLARE_ZONE_ID }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ matrix.php-versions }}
+        coverage: none
+        tools: composer:v2, phpunit
+    - name: Start mysql service
+      run: sudo /etc/init.d/mysql start
+    - name: Setup problem matchers for PHP
+      run: echo "::add-matcher::${{ runner.tool_cache }}/php.json"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Setup problem matchers for PHPUnit
+      run: echo "::add-matcher::${{ runner.tool_cache }}/phpunit.json"
+    - name: Get composer cache directory
+      id: composercache
+      run: echo "::set-output name=dir::$(composer config cache-files-dir)"
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.composercache.outputs.dir }}
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.json') }}
+        restore-keys: ${{ runner.os }}-composer-
+    - name: Require PHPUnit 7.5 for WP compatibility
+      run: composer require --dev --no-scripts phpunit/phpunit "^7.5" -W
+    - name: Require WooCommerce 7 for WP compatibility
+      run: composer require --dev --no-scripts wpackagist-plugin/woocommerce "^7" -W
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-interaction --no-scripts
+    - name: Install tests (ces)
+      run: bash bin/install-wp-tests.sh wordpress_test root root 127.0.0.1:3306 ${{ matrix.wp-versions }}
+    - name: Mysql8 auth plugin workaround
+      run: sudo mysql -u root -proot -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root';"
+    - name: Test (ces)
+      run: composer run-tests
