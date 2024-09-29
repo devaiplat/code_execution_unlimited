@@ -1,0 +1,150 @@
+name: gravitational/teleport
+run-name: AWS E2E Tests (Non-root) - ${{ github.run_id }} - @${{ github.actor }}
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  TEST_KUBE: true
+  TEST_AWS_DB: true
+  AWS_REGION: us-west-2
+  GHA_ASSUME_ROLE: arn:aws:iam::307493967395:role/tf-aws-e2e-gha-role
+  KUBERNETES_SERVICE_ASSUME_ROLE: arn:aws:iam::307493967395:role/tf-eks-discovery-ci-cluster-kubernetes-service-access-role
+  KUBE_DISCOVERY_SERVICE_ASSUME_ROLE: arn:aws:iam::307493967395:role/tf-eks-discovery-ci-cluster-discovery-service-access-role
+  EKS_CLUSTER_NAME: gha-discovery-ci-eks-us-west-2-307493967395
+  RDS_ACCESS_ROLE: arn:aws:iam::307493967395:role/ci-database-e2e-tests-rds-access
+  RDS_DISCOVERY_ROLE: arn:aws:iam::307493967395:role/ci-database-e2e-tests-rds-discovery
+  RDS_POSTGRES_INSTANCE_NAME: ci-database-e2e-tests-rds-postgres-instance-us-west-2-307493967395
+  RDS_MYSQL_INSTANCE_NAME: ci-database-e2e-tests-rds-mysql-instance-us-west-2-307493967395
+  RDS_MARIADB_INSTANCE_NAME: ci-database-e2e-tests-rds-mariadb-instance-us-west-2-307493967395
+  REDSHIFT_ACCESS_ROLE: arn:aws:iam::307493967395:role/ci-database-e2e-tests-redshift-access
+  REDSHIFT_DISCOVERY_ROLE: arn:aws:iam::307493967395:role/ci-database-e2e-tests-redshift-discovery
+  REDSHIFT_IAM_DB_USER: ci-database-e2e-tests-redshift-user
+  REDSHIFT_CLUSTER_NAME: ci-database-e2e-tests-redshift-cluster-us-west-2-307493967395
+  REDSHIFT_SERVERLESS_ACCESS_ROLE: arn:aws:iam::307493967395:role/ci-database-e2e-tests-redshift-serverless-access
+  REDSHIFT_SERVERLESS_DISCOVERY_ROLE: arn:aws:iam::307493967395:role/ci-database-e2e-tests-redshift-serverless-discovery
+  REDSHIFT_SERVERLESS_ENDPOINT_NAME: ci-database-e2e-tests-redshift-serverless-workgroup-rss-access-us-west-2-307493967395
+  REDSHIFT_SERVERLESS_IAM_DB_USER: ci-database-e2e-tests-redshift-serverless-user
+  REDSHIFT_SERVERLESS_WORKGROUP_NAME: ci-database-e2e-tests-redshift-serverless-workgroup-us-west-2-307493967395
+  DISCOVERY_MATCHER_LABELS: '*=*'
+jobs:
+  changes:
+    name: Check for relevant changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+    steps:
+    - name: Checkout
+      if: ${{ github.event_name == 'merge_group' }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36
+      id: changes
+      with:
+        base: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
+        ref: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
+        filters: >
+          changed:
+            - '.github/workflows/aws-e2e-tests-non-root.yaml'
+            - '**.go'
+            - 'go.mod'
+            - 'go.sum'
+            - 'build.assets/Makefile'
+            - 'build.assets/Dockerfile*'
+            - 'Makefile'
+  test:
+    name: AWS E2E Tests (Non-root)
+    needs: changes
+    if: true
+    runs-on: ubuntu-22.04-16core
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    container:
+      image: ghcr.io/gravitational/teleport-buildbox:teleport17
+      env:
+        WEBASSETS_SKIP_BUILD: 1
+      options: --cap-add=SYS_ADMIN --privileged
+    steps:
+    - name: Checkout Teleport
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Prepare workspace
+      uses: ./.github/actions/prepare-workspace
+    - name: Chown
+      run: |
+        mkdir -p $(go env GOMODCACHE)
+
+        mkdir -p $(go env GOCACHE)
+
+        chown -Rf ci:ci ${GITHUB_WORKSPACE} $(go env GOMODCACHE) $(go env GOCACHE)
+      continue-on-error: true
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+      with:
+        aws-region: ${{ env.AWS_REGION }}
+        role-to-assume: ${{ env.GHA_ASSUME_ROLE }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      timeout-minutes: 10
+      run: |
+        runuser -u ci -g ci make e2e-aws RDPCLIENT_SKIP_BUILD=1
