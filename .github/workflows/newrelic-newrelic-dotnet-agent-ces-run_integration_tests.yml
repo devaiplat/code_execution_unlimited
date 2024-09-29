@@ -1,0 +1,419 @@
+name: newrelic/newrelic-dotnet-agent
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+env:
+  DOTNET_NOLOGO: true
+jobs:
+  setup-matrices:
+    name: Configure namespaces for test matrices
+    runs-on: ubuntu-latest
+    outputs:
+      integration-tests-matrix: ${{ steps.configure_integration_tests_matrix.outputs.matrix }}
+      unbounded-tests-matrix: ${{ steps.configure_unbounded_tests_matrix.outputs.matrix }}
+    steps:
+    - name: Harden Runner
+      uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7
+      with:
+        egress-policy: audit
+    - id: configure_integration_tests_matrix
+      run: |
+        if [ "${{ inputs.integration-test-namespaces }}" == "ALL" ] ; then
+          # Use the full list of namespaces
+          namespaces="[ 'AgentFeatures', 'AgentLogs', 'AgentMetrics', 'Api', 'AppDomainCaching', 'AspNetCore', 'AwsLambda', 'BasicInstrumentation', 'CatInbound', 'CatOutbound', 'CodeLevelMetrics', 'Configuration', \
+        'CSP', 'CustomAttributes', 'CustomInstrumentation', 'DataTransmission', 'DistributedTracing', 'Errors', 'HttpClientInstrumentation', 'InfiniteTracing', 'LLM', 'Logging.ContextData', \
+
+        'Logging.HsmAndCsp', 'Logging.LocalDecoration', 'Logging.LogLevelDetection', 'Logging.MaxSamplesStored', 'Logging.MetricsAndForwarding', 'Logging.ZeroMaxSamplesStored', \
+
+        'Owin', 'MassTransit', 'ReJit.NetCore', 'ReJit.NetFramework', 'RequestHandling', 'RequestHeadersCapture.AspNet', 'RequestHeadersCapture.AspNetCore', 'RequestHeadersCapture.EnvironmentVariables', \
+
+        'RequestHeadersCapture.Owin', 'RequestHeadersCapture.WCF', 'RestSharp', 'WCF.Client.IIS.ASPDisabled', 'WCF.Client.IIS.ASPEnabled', 'WCF.Client.Self', \
+
+        'WCF.Service.IIS.ASPDisabled', 'WCF.Service.IIS.ASPEnabled', 'WCF.Service.Self' ]"
+
+        else
+          # Just use the supplied list of namespaces
+          namespaces="[ ${{ inputs.integration-test-namespaces }} ]"
+        fi
+
+        echo "matrix=$namespaces" >> $GITHUB_OUTPUT
+      shell: bash
+    - id: configure_unbounded_tests_matrix
+      run: |
+        if [ "${{ inputs.unbounded-test-namespaces }}" == "ALL" ] ; then
+          # Use the full list of namespaces
+          # Oracle is disabled temporarily
+          #namespaces="[ 'CosmosDB', 'Couchbase', 'Elasticsearch', 'MongoDB', 'Msmq', 'MsSql', 'MySql', 'NServiceBus', 'NServiceBus5', 'Oracle', 'Postgres', 'RabbitMq', 'Redis' ]"
+          namespaces="[ 'CosmosDB', 'Couchbase', 'Elasticsearch', 'MongoDB', 'Msmq', 'MsSql', 'MySql', 'NServiceBus', 'NServiceBus5', 'Postgres', 'RabbitMq', 'Redis' ]"
+        else
+          # Just use the supplied list of namespaces
+          namespaces="[ ${{ inputs.unbounded-test-namespaces }} ]"
+        fi
+
+        echo "matrix=$namespaces" >> $GITHUB_OUTPUT
+      shell: bash
+  run-integration-tests:
+    needs:
+    - setup-matrices
+    if: true
+    name: Run IntegrationTests
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        namespace: ${{fromJSON(needs.setup-matrices.outputs.integration-tests-matrix)}}
+      fail-fast: false
+    env:
+      integration_tests_shared_project: ${{ github.workspace }}/tests/Agent/IntegrationTests/Shared
+      integration_tests_path: ${{ github.workspace }}/tests/Agent/IntegrationTests/IntegrationTests/bin/Release/net462
+      enhanced_logging: false
+      NR_DOTNET_TEST_SAVE_WORKING_DIRECTORY: 1
+    steps:
+    - name: Checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Disable TLS 1.3
+      run: |
+        $registryPath = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client"
+
+        if(!(Test-Path $registryPath)) {
+          New-Item -Path $registryPath -Force
+        }
+
+        New-ItemProperty -Path $registryPath -Name "DisabledByDefault" -Value "1" -PropertyType DWORD -Force
+
+        New-ItemProperty -Path $registryPath -Name "Enabled" -Value "0" -PropertyType DWORD -Force
+      shell: powershell
+    - name: Create and trust .NET development SSL certificate
+      run: |
+        dotnet dev-certs https --clean
+
+        dotnet dev-certs https --export-path ./devcert.pfx --password "password1"
+
+        $pwd = ConvertTo-SecureString -String "password1" -Force -AsPlainText
+
+        Import-PfxCertificate -FilePath ./devcert.pfx -CertStoreLocation Cert:\LocalMachine\Root -Password $pwd
+
+        dotnet dev-certs https --check --trust
+      shell: powershell
+    - name: Set up secrets
+      env:
+        INTEGRATION_TEST_SECRETS: ${{ secrets.TEST_SECRETS }}
+      run: |
+        "$Env:INTEGRATION_TEST_SECRETS" | dotnet user-secrets set --project ${{ env.integration_tests_shared_project }}
+      shell: pwsh
+    - name: Download Agent Home Folders
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ inputs.run_id }}
+        name: homefolders
+        path: ${{ github.workspace }}/src/Agent
+        repository: ${{ github.repository }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Download Integration Tests (ces) (ces)
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ inputs.run_id }}
+        name: integrationtests
+        path: ${{ github.workspace }}
+        repository: ${{ github.repository }}
+    - name: Install dependencies
+      run: |
+        Enable-WindowsOptionalFeature -Online -FeatureName IIS-HostableWebCore
+
+        pip install aiohttp
+      shell: powershell
+    - name: Run Integration Tests (ces)
+      run: |
+        if ($Env:enhanced_logging -eq $True) {
+          Write-Host "List ports in use"
+          netstat -no  
+        }
+
+
+        Write-Host "Run tests"
+
+
+        # Test parallelization is disabled until we can solve concurrent dotnet publish issues with ConsoleMF usage
+
+        $json = Get-Content "${{ env.integration_tests_path }}/xunit.runner.json" | ConvertFrom-Json
+
+        $json | Add-Member -Name "parallelizeAssembly" -Value $false -MemberType NoteProperty
+
+        $json | Add-Member -Name "parallelizeTestCollections" -Value $false -MemberType NoteProperty
+
+        # if ("${{ matrix.namespace }}" -like "Logging.*" ) {
+
+        #   $json.parallelizeAssembly = $true
+
+        #   $json.parallelizeTestCollections = $true
+
+        # }
+
+        if ("${{ inputs.parallelize }}" -eq "true") {
+          $json.parallelizeAssembly = $true
+          $json.parallelizeTestCollections = $true
+        }
+
+        $json | ConvertTo-Json | Out-File "${{ env.integration_tests_path }}/xunit.runner.json"
+
+
+        dotnet test ${{ env.integration_tests_path }}/NewRelic.Agent.IntegrationTests.dll --filter FullyQualifiedName~NewRelic.Agent.IntegrationTests.${{ matrix.namespace }} --no-build --nologo --logger "trx;LogFileName=C:\IntegrationTestWorkingDirectory\TestResults\${{ matrix.namespace }}_testResults.trx"
+
+
+        if ($Env:enhanced_logging -eq $True) {
+          Write-Host "Get HostableWebCore errors (if any)"
+          Get-EventLog -LogName Application -Source HostableWebCore -ErrorAction:Ignore
+
+          Write-Host "Get .NET Runtime errors (if any)"
+          Get-EventLog -LogName Application -Source ".NET Runtime" -EntryType "Error","Warning" -ErrorAction:Ignore  
+        }
+      shell: powershell
+    - name: Archive integration test results on failure (ces)
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+      with:
+        name: integration-test-working-directory-${{ matrix.namespace }}
+        path: >
+          C:\IntegrationTestWorkingDirectory\**\*.log
+
+          C:\IntegrationTestWorkingDirectory\**\*.config
+
+          C:\IntegrationTestWorkingDirectory\**\appsettings.json
+
+          C:\IntegrationTestWorkingDirectory\TestResults\**\*TestResults.trx
+        if-no-files-found: error
+  run-unbounded-tests:
+    needs:
+    - setup-matrices
+    if: true
+    name: Run Unbounded Tests
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        namespace: ${{fromJSON(needs.setup-matrices.outputs.unbounded-tests-matrix)}}
+      fail-fast: false
+    env:
+      integration_tests_shared_project: ${{ github.workspace }}/tests/Agent/IntegrationTests/Shared
+      unbounded_tests_path: ${{ github.workspace }}/tests/Agent/IntegrationTests/UnboundedIntegrationTests/bin/Release/net462
+      NR_DOTNET_TEST_SAVE_WORKING_DIRECTORY: 1
+      enhanced_logging: false
+    steps:
+    - name: Checkout
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Download Agent Home Folders
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ inputs.run_id }}
+        name: homefolders
+        path: ${{ github.workspace }}/src/Agent
+        repository: ${{ github.repository }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Download Integration Tests (ces) (ces)
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ inputs.run_id }}
+        name: unboundedintegrationtests
+        path: ${{ github.workspace }}
+        repository: ${{ github.repository }}
+    - name: Disable TLS 1.3
+      run: |
+        $registryPath = "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client"
+
+        if(!(Test-Path $registryPath)) {
+          New-Item -Path $registryPath -Force
+        }
+
+        New-ItemProperty -Path $registryPath -Name "DisabledByDefault" -Value "1" -PropertyType DWORD -Force
+
+        New-ItemProperty -Path $registryPath -Name "Enabled" -Value "0" -PropertyType DWORD -Force
+      shell: powershell
+    - name: Install dependencies
+      run: |
+        Write-Host "Installing HostableWebCore Feature"
+
+        Enable-WindowsOptionalFeature -Online -FeatureName IIS-HostableWebCore
+
+
+        $namespacesThatNeedMsmq = 'Msmq','NServiceBus','NServiceBus5'
+
+        if ($namespacesThatNeedMsmq -contains "${{ matrix.namespace }}")
+
+        {
+          Write-Host "Installing Msmq Features"
+          Enable-WindowsOptionalFeature -Online -FeatureName MSMQ-Server -All
+          Enable-WindowsOptionalFeature -Online -FeatureName MSMQ-HTTP -All
+          Enable-WindowsOptionalFeature -Online -FeatureName MSMQ-Triggers -All
+        }
+
+
+        if ("${{ matrix.namespace }}" -eq "MsSql") {
+          Write-Host "Installing MSSQL CLI"
+          msiexec /i "${{ github.workspace }}\build\Tools\sqlncli.msi" IACCEPTSQLNCLILICENSETERMS=YES /quiet /qn /norestart
+          Start-Sleep 20 # Need to wait for install to finish -- takes only a few seconds, but we need to be sure.
+        }
+      shell: powershell
+    - name: Set up secrets
+      env:
+        INTEGRATION_TEST_SECRETS: ${{ secrets.TEST_SECRETS }}
+      run: |
+        "$Env:INTEGRATION_TEST_SECRETS" | dotnet user-secrets set --project ${{ env.integration_tests_shared_project }}
+      shell: pwsh
+    - name: Start Local CosmosDB Emulator for CosmosDB Tests (ces)
+      if: matrix.namespace == 'CosmosDB'
+      uses: southpolesteve/cosmos-emulator-github-action@2b1168b52481f972890f5da2ff8f9d2cc3707804
+    - name: Run Unbounded Integration Tests (ces)
+      run: |
+        if ($Env:enhanced_logging -eq $True) {
+          Write-Host "List ports in use"
+          netstat -no  
+        }
+
+
+        # Test parallelization is disabled until we can solve concurrent dotnet publish issues with ConsoleMF usage
+
+        $json = Get-Content "${{ env.unbounded_tests_path }}/xunit.runner.json" | ConvertFrom-Json
+
+        $json | Add-Member -Name "parallelizeAssembly" -Value $false -MemberType NoteProperty
+
+        $json | Add-Member -Name "parallelizeTestCollections" -Value $false -MemberType NoteProperty
+
+        if ("${{ inputs.parallelize }}" -eq "true") {
+          $json.parallelizeAssembly = $true
+          $json.parallelizeTestCollections = $true
+        }
+
+        $json | ConvertTo-Json | Out-File "${{ env.unbounded_tests_path }}/xunit.runner.json"
+
+
+        dotnet test ${{ env.unbounded_tests_path }}/NewRelic.Agent.UnboundedIntegrationTests.dll --filter FullyQualifiedName~NewRelic.Agent.UnboundedIntegrationTests.${{ matrix.namespace }} --no-build --nologo --logger "trx;LogFileName=C:\IntegrationTestWorkingDirectory\TestResults\${{ matrix.namespace }}_testResults.trx"
+
+
+        if ($Env:enhanced_logging -eq $True) {
+          Write-Host "Get HostableWebCore errors (if any)"
+          Get-EventLog -LogName Application -Source HostableWebCore -ErrorAction:Ignore
+
+          Write-Host "Get .NET Runtime errors (if any)"
+          Get-EventLog -LogName Application -Source ".NET Runtime" -EntryType "Error","Warning" -ErrorAction:Ignore  
+        }
+      shell: powershell
+    - name: Archive unbounded test results on failure (ces)
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+      with:
+        name: unbounded-test-working-directory-${{ matrix.namespace }}
+        path: >
+          C:\IntegrationTestWorkingDirectory\**\*.log
+
+          C:\IntegrationTestWorkingDirectory\**\*.config
+
+          C:\IntegrationTestWorkingDirectory\**\appsettings.json
+
+          C:\IntegrationTestWorkingDirectory\TestResults\**\*TestResults.trx
+        if-no-files-found: error
