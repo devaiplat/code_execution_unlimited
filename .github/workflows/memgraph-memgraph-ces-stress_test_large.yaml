@@ -1,0 +1,57 @@
+name: memgraph/memgraph
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  StressTestLargeIndividual:
+    if: true
+    uses: ./.github/workflows/reusable_release_tests.yaml
+    with:
+      os: ${{ github.event.inputs.os || 'debian-11' }}
+      toolchain: ${{ github.event.inputs.toolchain || 'v5' }}
+      arch: amd
+      threads: 24
+      build_type: ${{ github.event.inputs.build_type || 'Release' }}
+      run_stress_large: true
+      run_release_tests: false
+    secrets: inherit
+  StressTestLargeAll:
+    if: true
+    strategy:
+      matrix:
+        os:
+        - amzn-2
+        - centos-7
+        - centos-9
+        - debian-11
+        - debian-12
+        - fedora-38
+        - fedora-39
+        - rocky-9.3
+        - ubuntu-20.04
+        - ubuntu-22.04
+    uses: ./.github/workflows/reusable_release_tests.yaml
+    with:
+      os: ${{ matrix.os }}
+      toolchain: ${{ github.event.inputs.toolchain || 'v5' }}
+      arch: amd
+      threads: 24
+      build_type: ${{ github.event.inputs.build_type || 'Release' }}
+      run_stress_large: true
+      run_release_tests: false
+    secrets: inherit
