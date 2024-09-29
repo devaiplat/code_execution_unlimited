@@ -1,0 +1,298 @@
+name: firebase/firebase-ios-sdk
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+jobs:
+  pod-lib-lint:
+    if: true
+    strategy:
+      matrix:
+        target:
+        - ios
+        - tvos
+        - macos --skip-tests
+        - watchos
+        os:
+        - macos-14
+        xcode:
+        - Xcode_15.2
+        - Xcode_16
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ruby/setup-ruby@v1
+    - name: Setup Bundler
+      run: scripts/setup_bundler.sh
+    - name: Xcode
+      run: sudo xcode-select -s /Applications/${{ matrix.xcode }}.app/Contents/Developer
+    - uses: nick-fields/retry@v3
+      with:
+        timeout_minutes: 120
+        max_attempts: 3
+        retry_on: error
+        retry_wait_seconds: 120
+        command: scripts/pod_lib_lint.rb FirebaseABTesting.podspec --platforms=${{ matrix.target }}
+  spm-package-resolved:
+    env:
+      FIREBASECI_USE_LATEST_GOOGLEAPPMEASUREMENT: 1
+    runs-on: macos-14
+    outputs:
+      cache_key: ${{ steps.generate_cache_key.outputs.cache_key }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Generate Swift Package.resolved
+      id: swift_package_resolve
+      run: |
+        swift package resolve
+    - name: Generate cache key
+      id: generate_cache_key
+      run: |
+        cache_key="${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}"
+
+        echo "cache_key=${cache_key}" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/save@v4
+      id: cache
+      with:
+        path: .build
+        key: ${{ steps.generate_cache_key.outputs.cache_key }}
+  spm:
+    if: true
+    needs:
+    - spm-package-resolved
+    strategy:
+      matrix:
+        target:
+        - iOS
+        - tvOS
+        - macOS
+        - catalyst
+        - watchOS
+        os:
+        - macos-14
+        xcode:
+        - Xcode_15.2
+        - Xcode_16
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/cache/restore@v4
+      with:
+        path: .build
+        key: ${{needs.spm-package-resolved.outputs.cache_key}}
+    - name: Xcode
+      run: sudo xcode-select -s /Applications/${{ matrix.xcode }}.app/Contents/Developer
+    - name: Initialize xcodebuild
+      run: scripts/setup_spm_tests.sh
+    - uses: nick-fields/retry@v3
+      with:
+        timeout_minutes: 120
+        max_attempts: 3
+        retry_on: error
+        retry_wait_seconds: 120
+        command: scripts/build.sh ABTestingUnit ${{ matrix.target }} spm
+  catalyst:
+    if: true
+    runs-on: macos-14
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: mikehardy/buildcache-action@c87cea0ccd718971d6cc39e672c4f26815b6c126
+      with:
+        cache_key: catalyst${{ matrix.os }}
+    - uses: ruby/setup-ruby@v1
+    - name: Setup Bundler
+      run: scripts/setup_bundler.sh
+    - uses: nick-fields/retry@v3
+      with:
+        timeout_minutes: 120
+        max_attempts: 3
+        retry_on: error
+        retry_wait_seconds: 120
+        command: scripts/test_catalyst.sh FirebaseABTesting test FirebaseABTesting-Unit-unit
+  quickstart:
+    if: true
+    env:
+      plist_secret: ${{ secrets.GHASecretsGPGPassphrase1 }}
+      signin_secret: ${{ secrets.GHASecretsGPGPassphrase1 }}
+    runs-on: macos-14
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ruby/setup-ruby@v1
+    - name: Setup quickstart
+      env:
+        LEGACY: true
+      run: scripts/setup_quickstart.sh abtesting
+    - name: Install Secret GoogleService-Info.plist
+      run: scripts/decrypt_gha_secret.sh scripts/gha-encrypted/qs-abtesting.plist.gpg \ quickstart-ios/abtesting/GoogleService-Info.plist "$plist_secret"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test swift quickstart (ces) (ces)
+      env:
+        LEGACY: true
+      run: ([ -z $plist_secret ] || scripts/third_party/travis/retry.sh scripts/test_quickstart.sh ABTesting true)
+  quickstart-ftl-cron-only:
+    if: true
+    env:
+      plist_secret: ${{ secrets.GHASecretsGPGPassphrase1 }}
+      signin_secret: ${{ secrets.GHASecretsGPGPassphrase1 }}
+    runs-on: macos-14
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ruby/setup-ruby@v1
+    - uses: actions/setup-python@v5
+      with:
+        python-version: 3.11
+    - name: Setup quickstart
+      env:
+        LEGACY: true
+      run: scripts/setup_quickstart.sh abtesting
+    - name: Install Secret GoogleService-Info.plist
+      run: scripts/decrypt_gha_secret.sh scripts/gha-encrypted/qs-abtesting.plist.gpg \ quickstart-ios/abtesting/GoogleService-Info.plist "$plist_secret"
+    - name: Build swift quickstart
+      env:
+        LEGACY: true
+      run: ([ -z $plist_secret ] || scripts/third_party/travis/retry.sh scripts/test_quickstart_ftl.sh ABTesting)
+    - id: ftl_test
+      uses: FirebaseExtended/github-actions/firebase-test-lab@v1.4
+      with:
+        credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_CREDENTIALS }}
+        testapp_dir: quickstart-ios/build-for-testing
+        test_type: xctest
+  abtesting-cron-only:
+    if: true
+    runs-on: macos-14
+    strategy:
+      matrix:
+        target:
+        - ios
+        - tvos
+        - macos
+        flags:
+        - --use-static-frameworks
+    needs: pod-lib-lint
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ruby/setup-ruby@v1
+    - name: Setup Bundler
+      run: scripts/setup_bundler.sh
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: PodLibLint ABTesting Cron (ces) (ces)
+      run: |
+        scripts/third_party/travis/retry.sh scripts/pod_lib_lint.rb \
+          FirebaseABTesting.podspec --platforms=${{ matrix.target }} ${{ matrix.flags }}
