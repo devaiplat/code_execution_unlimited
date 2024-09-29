@@ -1,0 +1,145 @@
+name: cloudnative-pg/cloudnative-pg
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+defaults:
+  run:
+    shell: bash -Eeuo pipefail -x {0}
+jobs:
+  check-latest-postgres-version:
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.9
+    - name: Install Python dependencies
+      run: |
+        pip install packaging
+    - name: Generate PostgreSQL JSON files
+      run: |
+        python .github/postgres-versions-update.py
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Get the latest version of PostgreSQL Docker image (ces) (ces)
+      id: latest
+      env:
+        IMAGE_REPO: ghcr.io/cloudnative-pg/postgresql
+      run: |
+        LATEST_POSTGRES_VERSION=$(jq -r 'del(.[] | select(.[] | match("alpha|beta|rc"))) | .[keys | max][0]' < .github/pg_versions.json)
+
+        LATEST_POSTGRES_VERSION_IMAGE="${IMAGE_REPO}:${LATEST_POSTGRES_VERSION}"
+
+        echo "LATEST_POSTGRES_VERSION=$LATEST_POSTGRES_VERSION" >> $GITHUB_ENV
+
+        echo "LATEST_POSTGRES_VERSION_IMAGE=$LATEST_POSTGRES_VERSION_IMAGE" >> $GITHUB_ENV
+    - name: Get the current version of PostgreSQL
+      id: current
+      run: |
+        CURRENT_POSTGRES_VERSION_IMAGE=$(awk -F '"' '/DefaultImageName *=/{print $2}' pkg/versions/versions.go)
+
+        CURRENT_POSTGRES_VERSION=${CURRENT_POSTGRES_VERSION_IMAGE##*:}
+
+        echo "CURRENT_POSTGRES_VERSION=$CURRENT_POSTGRES_VERSION" >> $GITHUB_ENV
+
+        echo "CURRENT_POSTGRES_VERSION_IMAGE=$CURRENT_POSTGRES_VERSION_IMAGE" >> $GITHUB_ENV
+    - name: Update files to match the latest version of PostgreSQL (ces)
+      if: env.LATEST_POSTGRES_VERSION_IMAGE != env.CURRENT_POSTGRES_VERSION_IMAGE
+      env:
+        CURRENT_POSTGRES_VERSION: ${{ env.CURRENT_POSTGRES_VERSION }}
+        LATEST_POSTGRES_VERSION: ${{ env.LATEST_POSTGRES_VERSION }}
+        LATEST_POSTGRES_VERSION_IMAGE: ${{ env.LATEST_POSTGRES_VERSION_IMAGE }}
+      run: |
+        echo "New PostgreSQL version detected ; updating!"
+
+
+        # Update pkg/versions/versions.go
+
+        sed -i '/DefaultImageName *=/s@".*"@"'"${LATEST_POSTGRES_VERSION_IMAGE}"'"@' pkg/versions/versions.go
+
+
+        # Update docs directory (only .md and .yaml filename extensions)
+
+        find docs -type f \( -name '*.md' -o -name '*.yaml' \) \! -path '*release_notes*' -exec sed -i "/[ :]${CURRENT_POSTGRES_VERSION//./\\.}/s/${CURRENT_POSTGRES_VERSION//./\\.}/${LATEST_POSTGRES_VERSION}/g" {} +
+    - name: Create PR to update PostgreSQL version
+      if: env.LATEST_POSTGRES_VERSION_IMAGE != env.CURRENT_POSTGRES_VERSION_IMAGE
+      uses: peter-evans/create-pull-request@v7
+      env:
+        GITHUB_TOKEN: ${{ secrets.REPO_GHA_PAT }}
+      with:
+        title: 'feat: update default PostgreSQL version to ${{ env.LATEST_POSTGRES_VERSION }}'
+        body: Update default PostgreSQL version from ${{ env.CURRENT_POSTGRES_VERSION }} to ${{ env.LATEST_POSTGRES_VERSION }}
+        branch: postgres-versions-update
+        author: postgres-versions-updater <postgres-versions-updater@users.noreply.github.com>
+        commit-message: 'feat: update default PostgreSQL version to ${{ env.LATEST_POSTGRES_VERSION }}'
+        signoff: true
+    - name: Create Pull Request if postgresql versions have been updated
+      if: env.LATEST_POSTGRES_VERSION_IMAGE == env.CURRENT_POSTGRES_VERSION_IMAGE
+      uses: peter-evans/create-pull-request@v7
+      env:
+        GITHUB_TOKEN: ${{ secrets.REPO_GHA_PAT }}
+      with:
+        title: 'test: Updated Postgres versions used in E2E tests'
+        body: Update the Postgres versions used in E2E tests
+        branch: postgres-versions-update
+        author: postgres-versions-updater <postgres-versions-updater@users.noreply.github.com>
+        add-paths: .github/
+        commit-message: 'test: Updated Postgres versions used in E2E tests'
+        signoff: true
