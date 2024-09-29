@@ -1,0 +1,120 @@
+name: deltachat/deltachat-core-rust
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  tests:
+    name: Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - macos-latest
+        - windows-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        show-progress: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18
+    - name: System info
+      run: |
+        rustc -vV
+
+        rustup -vV
+
+        cargo -vV
+
+        npm --version
+
+        node --version
+    - name: Cache node modules
+      uses: actions/cache@v4
+      with:
+        path: >
+          ${{ env.APPDATA }}/npm-cache
+
+          ~/.npm
+        key: ${{ matrix.os }}-node-${{ hashFiles('**/package.json') }}
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: >
+          ~/.cargo/registry/
+
+          ~/.cargo/git
+
+          target
+        key: ${{ matrix.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}-2
+    - name: Install dependencies & build
+      if: steps.cache.outputs.cache-hit != 'true'
+      working-directory: node
+      run: npm install --verbose
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test (ces) (ces)
+      timeout-minutes: 10
+      working-directory: node
+      run: npm run test
+      env:
+        CHATMAIL_DOMAIN: ${{ secrets.CHATMAIL_DOMAIN }}
+        NODE_OPTIONS: --force-node-api-uncaught-exceptions-policy=true
