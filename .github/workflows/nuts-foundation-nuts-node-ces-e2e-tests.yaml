@@ -1,0 +1,134 @@
+name: nuts-foundation/nuts-node
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  e2e-test:
+    permissions:
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setting git SHA to PR head
+      if: ${{ github.event_name == 'pull_request' }}
+      run: echo "SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+    - name: Setting git SHA to branch head
+      if: ${{ github.event_name != 'pull_request' }}
+      run: echo "SHA=${{ github.sha }}" >> $GITHUB_ENV
+    - name: Build and push
+      uses: docker/build-push-action@v6
+      if: ${{ github.actor != 'dependabot' }}
+      with:
+        context: .
+        file: Dockerfile
+        platforms: linux/amd64
+        push: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+        tags: ghcr.io/nuts-foundation/nuts-node-ci:${{ env.SHA }}
+        secrets: >
+          GIT_AUTH_TOKEN=${{ secrets.PACKAGE_SECRET }}
+    - name: Build and push dependabot
+      uses: docker/build-push-action@v6
+      if: ${{ github.actor == 'dependabot' }}
+      with:
+        context: .
+        file: Dockerfile
+        platforms: linux/amd64
+        push: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+        tags: ghcr.io/nuts-foundation/nuts-node-ci:${{ env.SHA }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run E2E tests (ces) (ces)
+      run: |
+        cd e2e-tests && \
+
+        find . -type f -name "docker-compose.yml" | xargs -I{} sed -i 's~nutsfoundation/nuts-node:master~ghcr.io/nuts-foundation/nuts-node-ci:${{ env.SHA }}~g' {} && \
+
+        find . -type f -name "run-test.sh" | xargs -I{} sed -i 's/docker-compose exec/docker-compose exec -T/g' {} && \
+
+        ./run-tests.sh
+    - name: package cleanup
+      uses: dataaxiom/ghcr-cleanup-action@v1
+      if: ${{ github.actor != 'dependabot' }}
+      with:
+        owner: nuts-foundation
+        package: nuts-node-ci
+        token: ${{ secrets.PACKAGE_SECRET }}
+        keep-n-tagged: 3
+    - name: package cleanup dependabot
+      uses: dataaxiom/ghcr-cleanup-action@v1
+      if: ${{ github.actor == 'dependabot' }}
+      with:
+        owner: nuts-foundation
+        package: nuts-node-ci
+        token: ${{ secrets.GITHUB_TOKEN }}
+        keep-n-tagged: 3
