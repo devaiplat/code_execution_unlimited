@@ -1,0 +1,309 @@
+name: dataplat/dbatools
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  repl-tests-part1:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install and cache PowerShell modules
+      uses: potatoqualitee/psmodulecache@v5.2
+      with:
+        modules-to-cache: dbatools.library:2024.4.12
+    - name: Set encryption values
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        Set-DbatoolsConfig -FullName sql.connection.trustcert -Value $true -Register
+
+        Set-DbatoolsConfig -FullName sql.connection.encrypt -Value $false -Register
+
+        Get-DbatoolsConfigValue -FullName sql.connection.encrypt | Write-Warning
+    - name: Setup docker images
+      run: |
+        # create a shared network
+
+        docker network create localnet
+
+        # Expose engine and endpoint then setup a shared path for migrations
+
+        docker run -p 1433:1433  --volume shared:/shared:z --name mssql1 --hostname mssql1 --network localnet -d dbatools/sqlinstance
+
+        # Expose second engine and endpoint on different port
+
+        docker run -p 14333:1433 --volume shared:/shared:z --name mssql2 --hostname mssql2 --network localnet -d dbatools/sqlinstance2
+    - name: Add hostname to hosts file
+      run: |
+        echo "127.0.0.1 mssql1 mssql2" | sudo tee -a /etc/hosts
+    - name: "\U0001F465 Clone appveyor repo"
+      working-directory: /tmp
+      run: |
+        gh repo clone dataplat/appveyor-lab
+    - name: Setup Replication
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        # need some folders for our repl stuff
+
+        docker exec mssql1 mkdir /shared/data /shared/repldata /var/opt/mssql/ReplData
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run replication tests part 1 (ces) (ces)
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        $null = Invoke-Pester ./tests/gh-actions-repl-1.ps1 -Output Detailed -PassThru -Verbose
+  repl-tests-part2:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install and cache PowerShell modules
+      uses: potatoqualitee/psmodulecache@v5.2
+      with:
+        modules-to-cache: dbatools.library:2024.4.12
+    - name: Set encryption values
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        Set-DbatoolsConfig -FullName sql.connection.trustcert -Value $true -Register
+
+        Set-DbatoolsConfig -FullName sql.connection.encrypt -Value $false -Register
+
+        Get-DbatoolsConfigValue -FullName sql.connection.encrypt | Write-Warning
+    - name: Setup docker images
+      run: |
+        # create a shared network
+
+        docker network create localnet
+
+        # Expose engine and endpoint then setup a shared path for migrations
+
+        docker run -p 1433:1433  --volume shared:/shared:z --name mssql1 --hostname mssql1 --network localnet -d dbatools/sqlinstance
+
+        # Expose second engine and endpoint on different port
+
+        docker run -p 14333:1433 --volume shared:/shared:z --name mssql2 --hostname mssql2 --network localnet -d dbatools/sqlinstance2
+    - name: Add hostname to hosts file
+      run: |
+        echo "127.0.0.1 mssql1 mssql2" | sudo tee -a /etc/hosts
+    - name: "\U0001F465 Clone appveyor repo"
+      working-directory: /tmp
+      run: |
+        gh repo clone dataplat/appveyor-lab
+    - name: Setup Replication
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        # need some folders for our repl stuff
+
+        docker exec mssql1 mkdir /shared/data /shared/repldata /var/opt/mssql/ReplData
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run replication tests part 2 (ces) (ces)
+      if: env.TESTS_FIXED == 'true'
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        $null = Invoke-Pester ./tests/gh-actions-repl-2.ps1 -Output Detailed -PassThru -Verbose
+  repl-tests-part3:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install and cache PowerShell modules
+      uses: potatoqualitee/psmodulecache@v5.2
+      with:
+        modules-to-cache: dbatools.library:2024.4.12
+    - name: Set encryption values
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        Set-DbatoolsConfig -FullName sql.connection.trustcert -Value $true -Register
+
+        Set-DbatoolsConfig -FullName sql.connection.encrypt -Value $false -Register
+
+        Get-DbatoolsConfigValue -FullName sql.connection.encrypt | Write-Warning
+    - name: Setup docker images
+      run: |
+        # create a shared network
+
+        docker network create localnet
+
+        # Expose engine and endpoint then setup a shared path for migrations
+
+        docker run -p 1433:1433  --volume shared:/shared:z --name mssql1 --hostname mssql1 --network localnet -d dbatools/sqlinstance
+
+        # Expose second engine and endpoint on different port
+
+        docker run -p 14333:1433 --volume shared:/shared:z --name mssql2 --hostname mssql2 --network localnet -d dbatools/sqlinstance2
+    - name: Add hostname to hosts file
+      run: |
+        echo "127.0.0.1 mssql1 mssql2" | sudo tee -a /etc/hosts
+    - name: "\U0001F465 Clone appveyor repo"
+      working-directory: /tmp
+      run: |
+        gh repo clone dataplat/appveyor-lab
+    - name: Setup Replication
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        # need some folders for our repl stuff
+
+        docker exec mssql1 mkdir /shared/data /shared/repldata /var/opt/mssql/ReplData
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run replication tests part 3 (ces) (ces)
+      run: |
+        Import-Module ./dbatools.psd1 -Force
+
+        # Invoke-Pester ./tests/gh-actions-repl-3.ps1 -Output Detailed -PassThru -Verbose
