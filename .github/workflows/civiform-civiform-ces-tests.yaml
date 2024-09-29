@@ -1,0 +1,449 @@
+name: civiform/civiform
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: read-all
+jobs:
+  run_junit_tests:
+    runs-on: ubuntu-latest
+    steps:
+    - name: check out ${{ env.GITHUB_REF }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build test container (ces) (ces)
+      env:
+        DOCKER_BUILDKIT: 1
+      run: bin/build-dev
+    - name: Build dev-oidc
+      env:
+        DOCKER_BUILDKIT: 1
+      run: bin/build-dev-oidc
+    - name: Run tests (ces)
+      run: bin/run-test-ci
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      with:
+        file: server/code-coverage/report/jacoco.xml
+        verbose: true
+        fail_ci_if_error: false
+  run_typescript_unit_tests:
+    runs-on: ubuntu-latest
+    steps:
+    - name: check out ${{ env.GITHUB_REF }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build test container (ces) (ces)
+      env:
+        DOCKER_BUILDKIT: 1
+      run: bin/build-dev
+    - name: Run tests (ces)
+      run: bin/run-ts-tests
+  run_browser_tests_aws:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_number:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+    runs-on: ubuntu-latest
+    steps:
+    - name: check out ${{ env.GITHUB_REF }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build test app container (ces) (ces)
+      env:
+        DOCKER_BUILDKIT: 1
+      run: bin/build-dev
+    - name: Build browser testing container (ces)
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USER_NAME }}
+      run: bin/build-browser-tests
+    - name: Build dev-oidc
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USER_NAME }}
+      run: bin/build-dev-oidc
+    - name: Build localstack
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USER_NAME }}
+      run: bin/build-localstack-env
+    - name: Build mock-web-services
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: civiform
+      run: bin/build-mock-web-services
+    - name: Bring up test env with Localstack (ces)
+      env:
+        CI: true
+      run: bin/run-browser-test-env --aws --ci
+    - name: Run browser tests with Localstack (ces)
+      env:
+        CI: true
+      run: bin/run-browser-tests-ci --shard=${{ matrix.shard_number }}/${{strategy.job-total}}
+    - name: Verify no new image snapshots added
+      run: git add browser-test/image_snapshots ; git diff --compact-summary --exit-code HEAD
+    - name: Upload image diff outputs
+      uses: actions/upload-artifact@v4
+      with:
+        name: image diff output directory (aws) - shard-${{ matrix.shard_number }}-run-${{ github.run_attempt }}
+        retention-days: 3
+        path: browser-test/diff_output
+      if: failure()
+    - name: Upload updated snapshots
+      uses: actions/upload-artifact@v4
+      with:
+        name: updated snapshots output directory (aws) - shard-${{ matrix.shard_number }}-run-${{ github.run_attempt }}
+        retention-days: 3
+        path: browser-test/updated_snapshots
+      if: failure()
+    - name: Upload test videos on failure (ces)
+      uses: actions/upload-artifact@v4
+      with:
+        name: tests videos (aws) - shard-${{ matrix.shard_number }}-run-${{ github.run_attempt }}
+        retention-days: 3
+        path: >
+          browser-test/tmp/html-output/
+
+          browser-test/tmp/videos/
+      if: failure()
+    - name: Print logs on failure
+      if: failure()
+      run: cat .dockerlogs
+  run_browser_tests_azure:
+    if: true
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+    - name: check out ${{ env.GITHUB_REF }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build test app container (ces) (ces)
+      env:
+        DOCKER_BUILDKIT: 1
+      run: bin/build-dev
+    - name: Build browser testing container (ces)
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USER_NAME }}
+      run: bin/build-browser-tests
+    - name: Build dev-oidc
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USER_NAME }}
+      run: bin/build-dev-oidc
+    - name: Build localstack
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USER_NAME }}
+      run: bin/build-localstack-env
+    - name: Build mock-web-services
+      env:
+        DOCKER_BUILDKIT: 1
+        DOCKER_HUB_ACCESS_TOKEN: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+        DOCKER_HUB_USERNAME: civiform
+      run: bin/build-mock-web-services
+    - name: Bring up test env with Azurite (ces)
+      env:
+        CI: true
+      run: bin/run-browser-test-env --azure --ci
+    - name: Run browser tests with Azurite (ces)
+      env:
+        CI: true
+      run: bin/run-browser-tests-azure
+    - name: Upload image diff outputs
+      uses: actions/upload-artifact@v4
+      with:
+        name: image diff output directory (azure) - run-${{ github.run_attempt }}
+        path: browser-test/diff_output
+      if: failure()
+    - name: Upload test videos on failure (ces)
+      uses: actions/upload-artifact@v4
+      with:
+        name: tests videos (azure) - run-${{ github.run_attempt }}
+        path: browser-test/tmp
+      if: failure()
+    - name: Print logs on failure
+      if: failure()
+      run: cat .dockerlogs
+  test_prod:
+    runs-on: ubuntu-latest
+    steps:
+    - name: check out ${{ env.GITHUB_REF }}
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Build prod container
+      env:
+        DOCKER_BUILDKIT: 1
+      run: bin/build-prod
+    - name: Set local prod container tag
+      run: docker tag civiform:latest civiform:prod
+    - name: Build the stack
+      run: docker compose -f test-support/prod-simulator-compose.yml up -d
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test (ces) (ces)
+      run: while ! docker run --network host appropriate/curl -v -s --retry-max-time 180 --retry-connrefused http://localhost:8888/ ; do sleep 5; done
+      timeout-minutes: 3
+    - name: Print logs on failure
+      if: failure()
+      run: docker compose logs
