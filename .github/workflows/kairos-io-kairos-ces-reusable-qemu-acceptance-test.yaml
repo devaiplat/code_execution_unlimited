@@ -1,0 +1,131 @@
+name: kairos-io/kairos
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: read-all
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Release space from worker
+      run: |
+        echo "Listing top largest packages"
+
+        pkgs=$(dpkg-query -Wf '${Installed-Size}\t${Package}\t${Status}\n' | awk '$NF == "installed"{print $1 "\t" $2}' | sort -nr)
+
+        head -n 30 <<< "${pkgs}"
+
+        echo
+
+        df -h
+
+        echo
+
+        sudo apt-get remove -y '^llvm-.*|^libllvm.*' || true
+
+        sudo apt-get remove --auto-remove android-sdk-platform-tools || true
+
+        sudo apt-get purge --auto-remove android-sdk-platform-tools || true
+
+        sudo rm -rf /usr/local/lib/android
+
+        sudo apt-get remove -y '^dotnet-.*|^aspnetcore-.*' || true
+
+        sudo rm -rf /usr/share/dotnet
+
+        sudo apt-get remove -y '^mono-.*' || true
+
+        sudo apt-get remove -y '^ghc-.*' || true
+
+        sudo apt-get remove -y '.*jdk.*|.*jre.*' || true
+
+        sudo apt-get remove -y 'php.*' || true
+
+        sudo apt-get remove -y hhvm || true
+
+        sudo apt-get remove -y powershell || true
+
+        sudo apt-get remove -y firefox || true
+
+        sudo apt-get remove -y monodoc-manual || true
+
+        sudo apt-get remove -y msbuild || true
+
+        sudo apt-get remove -y microsoft-edge-stable || true
+
+        sudo apt-get remove -y '^google-.*' || true
+
+        sudo apt-get remove -y azure-cli || true
+
+        sudo apt-get remove -y '^mongo.*-.*|^postgresql-.*|^mysql-.*|^mssql-.*' || true
+
+        sudo apt-get remove -y '^gfortran-.*' || true
+
+        sudo apt-get remove -y '^gcc-*' || true
+
+        sudo apt-get remove -y '^g++-*' || true
+
+        sudo apt-get remove -y '^cpp-*' || true
+
+        sudo apt-get autoremove -y
+
+        sudo apt-get clean
+
+        echo
+
+        echo "Listing top largest packages"
+
+        pkgs=$(dpkg-query -Wf '${Installed-Size}\t${Package}\t${Status}\n' | awk '$NF == "installed"{print $1 "\t" $2}' | sort -nr)
+
+        head -n 30 <<< "${pkgs}"
+
+        echo
+
+        sudo rm -rfv build || true
+
+        df -h
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - run: |
+        git fetch --prune --unshallow
+    - name: Install Go
+      uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32
+      with:
+        go-version-file: tests/go.mod
+        cache-dependency-path: tests/go.sum
+    - name: Download ISO
+      id: iso
+      uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+      with:
+        name: kairos-${{ inputs.flavor }}-${{ inputs.flavor_release }}.iso.zip
+    - name: Display structure of downloaded files
+      run: ls -las .
+    - name: Install earthly
+      uses: Luet-lab/luet-install-action@cec77490c3f2416d7d07a47cfab04d448641d7ce
+      with:
+        repository: quay.io/kairos/packages
+        packages: utils/earthly
+    - name: Block all traffic to metadata ip
+      run: |
+        sudo iptables -I INPUT -s 169.254.169.254 -j DROP
+
+        sudo iptables -I OUTPUT -d 169.254.169.254 -j DROP
+    - name: Login to earthly
+      run: |
+        earthly account login --token ${{ secrets.EARTHLY_TOKEN }} && earthly org select Kairos
+    - run: |
+        earthly +run-qemu-datasource-tests --PREBUILT_ISO=$(ls *${{ inputs.flavor }}*.iso) --FLAVOR=${{ inputs.flavor }} --SSH_PORT=${{ inputs.port }}
