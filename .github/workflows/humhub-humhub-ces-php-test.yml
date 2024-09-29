@@ -1,0 +1,138 @@
+name: humhub/humhub
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+jobs:
+  tests:
+    name: PHP ${{ matrix.php-version }}-mysql-${{ matrix.mysql-version }}
+    env:
+      extensions: curl, intl, pdo, pdo_mysql, zip, exif, fileinfo, mbstring, gd, ldap
+      key: cache-v2
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        php-version:
+        - 8.0
+        - 8.1
+        - 8.2
+        - 8.3
+        mysql-version:
+        - 5.7
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql-version }}
+        env:
+          MYSQL_DATABASE: humhub_test
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+        - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+    steps:
+    - name: Start Selenium
+      run: |
+        docker run --detach --net=host --shm-size="2g" selenium/standalone-chrome
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v3
+    - name: Install PHP with extensions
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ matrix.php-version }}
+        extensions: ${{ env.extensions }}
+        ini-values: date.timezone='UTC'
+    - name: Determine composer cache directory
+      if: matrix.os == 'ubuntu-latest'
+      run: echo "COMPOSER_CACHE_DIR=$(composer config cache-dir)" >> $GITHUB_ENV
+    - name: Validate composer.json and composer.lock
+      run: composer validate
+    - name: Cache dependencies installed with composer
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.COMPOSER_CACHE_DIR }}
+        key: php${{ matrix.php-version }}-composer-${{ matrix.dependencies }}-${{ hashFiles('**/composer.json') }}
+        restore-keys: >
+          php${{ matrix.php-version }}-composer-${{ matrix.dependencies }}-
+    - name: Install dependencies with composer
+      run: composer install --prefer-dist --no-interaction --no-progress --optimize-autoloader --ansi
+    - name: Install npm dependencies
+      run: npm install
+    - name: Build production assets
+      run: grunt build-assets
+    - name: Run migrations
+      run: php protected/humhub/tests/codeception/bin/yii migrate/up --includeModuleMigrations=1 --interactive=0
+    - name: Run installer
+      run: php protected/humhub/tests/codeception/bin/yii installer/auto
+    - name: Rebuild search index
+      run: php protected/humhub/tests/codeception/bin/yii search/rebuild
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run test server (ces) (ces)
+      run: php --server 127.0.0.1:8080 index-test.php &>/tmp/phpserver.log &
+    - name: Valdiate test server (ces)
+      run: sleep 5 && curl --fail --head http://127.0.0.1:8080/index-test.php
+    - name: Run test suite (ces)
+      run: grunt test -build -env=github
+    - name: Upload Codeception Output
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: codeception-output
+        path: protected/humhub/tests/codeception/_output/*
