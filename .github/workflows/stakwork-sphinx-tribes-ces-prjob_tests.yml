@@ -1,0 +1,102 @@
+name: stakwork/sphinx-tribes
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test-go:
+    name: Go
+    runs-on:
+    - ubuntu-latest
+    steps:
+    - name: Enable docker.host.internal for Ubuntu
+      run: |
+        pwd && sudo bash -c 'echo "172.17.0.1 host.docker.internal" >> /etc/hosts'
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Clone Stack
+      run: |
+        git clone --single-branch --branch change_v2_ports https://github.com/stakwork/sphinx-stack.git stackv2;
+    - name: Run Stack V2
+      uses: nick-fields/retry@v2
+      with:
+        timeout_minutes: 10
+        max_attempts: 3
+        command: >
+          GITACTION_ENV=gitactionenv docker compose -f ./stackv2/alts/v2.yml --project-directory ./stackv2 up -d;
+
+          sleep 240;
+
+          docker ps
+
+          docker logs alice.sphinx
+
+          docker logs bob.sphinx
+
+          docker wait stackv2-v2setup-1
+    - name: Starting DB
+      run: docker compose -f ./docker/testdb-docker-compose.yml -p test_db  up -d
+    - name: Install cover
+      run: go get golang.org/x/tools/cmd/cover
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Tests (ces) (ces)
+      run: sudo V2_BOT_URL=http://localhost:3005 V2_BOT_TOKEN=xyzxyzxyz go test ./... -race -v -coverprofile=coverage.out && ./cover-check.sh coverage.out 8.4
+    - name: Droping DB with docker compose
+      run: docker compose -f ./docker/testdb-docker-compose.yml -p test_db down
+    - name: Stop Stack
+      working-directory: ./stackv2
+      run: docker compose down
