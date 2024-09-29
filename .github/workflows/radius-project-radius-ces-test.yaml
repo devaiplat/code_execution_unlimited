@@ -1,0 +1,103 @@
+name: radius-project/radius
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    if: true
+    strategy:
+      matrix:
+        include:
+        - os: linux
+          arch: amd64
+          file: rad
+        - os: linux
+          arch: arm64
+          file: rad
+        - os: linux
+          arch: arm
+          file: rad
+        - os: darwin
+          arch: amd64
+          file: rad
+        - os: darwin
+          arch: arm64
+          file: rad
+        - os: windows
+          arch: amd64
+          file: rad
+          ext: .exe
+    steps:
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Get latest version (ces) (ces)
+      run: |
+        radReleaseUrl="https://api.github.com/repos/radius-project/radius/releases"
+
+        echo "RAD_VERSION=$(curl -s ${radReleaseUrl} | grep \"tag_name\" | grep -v rc | awk 'NR==1{print $2}' |  sed -n 's/\"\(.*\)\",/\1/p')" >> $GITHUB_ENV
+    - name: Download file
+      run: curl -sSLI -w "%{http_code}" "https://github.com/radius-project/radius/releases/download/${{ env.RAD_VERSION }}/${{ matrix.file }}_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}" --fail-with-body -o "${{ matrix.file }}_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}"
+    - name: Test Linux x64 (ces)
+      if: ${{ matrix.os == 'linux' && matrix.arch == 'x64' }}
+      run: |
+        chmod +x ./${{ matrix.file }}_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }}
+
+        ./${{ matrix.file }}_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext }} version
+    - name: Create GitHub issue on failure
+      if: ${{ failure() }}
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh issue create --title "CLI nightly test failed - ${{ matrix.os }}-${{ matrix.arch }}" --body "Test failed on ${{ github.repository }} for ${{ matrix.os }}-${{ matrix.arch }}. See [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for more details." --repo ${{ github.repository }}
