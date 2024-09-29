@@ -1,0 +1,184 @@
+name: spellshift/realm
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  tavern:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - macOS-latest
+        - windows-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: ⚡ Setup Golang
+      uses: actions/setup-go@v3
+      with:
+        go-version-file: go.mod
+        cache: true
+    - name: "\U0001F528 Build"
+      run: go build -v -o ./build/tavern ./tavern
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: "\U0001F50E Test (ces) (ces)"
+      run: go test -v -race -coverprofile='coverage.out' -covermode=atomic ./tavern/...
+    - name: "\U0001F4F6 Upload Coverage Results"
+      uses: codecov/codecov-action@v3
+  implants:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - macOS-latest
+        - windows-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - if: matrix.os == 'windows-latest'
+      run: start-process -filepath powershell -ArgumentList '/c','Set-MpPreference -DisableRealtimeMonitoring $true' -verb RunAs
+      name: "\U0001F47E Disable defender"
+      shell: powershell
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: 1.76.0
+        default: true
+        profile: minimal
+        components: rustfmt, clippy
+    - name: Setup Rust (Loader)
+      uses: actions-rs/toolchain@v1
+      if: matrix.os == 'windows-latest'
+      with:
+        toolchain: nightly-2024-02-11
+        default: false
+        profile: minimal
+        components: rust-src
+    - name: rust-cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ./implants/ -> ../target
+    - if: matrix.os == 'windows-latest'
+      shell: powershell
+      name: Build reflective loader
+      run: |
+        cd ./bin/reflective_loader/
+
+        cargo +nightly-2024-02-11 build --release -Z build-std=core,compiler_builtins -Z build-std-features=compiler-builtins-mem
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install latest nextest & cargo-llvm-cov release (ces) (ces)
+      uses: taiki-e/install-action@v2.17.7
+      with:
+        tool: nextest,cargo-llvm-cov
+    - name: "\U0001F50E Run tests (ces)"
+      run: |
+        cd ./implants/ &&
+
+        cargo fmt --check &&
+
+        cargo llvm-cov nextest --lcov --output-path lcov.info
+    - name: "\U0001F4F6 Upload Coverage Results"
+      uses: codecov/codecov-action@v3
