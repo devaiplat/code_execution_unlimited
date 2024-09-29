@@ -1,0 +1,51 @@
+name: Automattic/wc-calypso-bridge
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  check-versions:
+    if: true
+    name: Check versions
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Extract Version Number
+      run: |
+        if [[ "${{ github.head_ref }}" =~ ^release\/([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          version="${BASH_REMATCH[1]}"
+          echo "Extracted version number: ${version}"
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version number format: ${version}"
+            exit 1
+          fi
+          echo "Valid version number format"
+          echo "VERSION=${version}" >> $GITHUB_ENV
+        else
+          echo "Branch name does not match the release/X.X.X format: ${{ github.head_ref }}"
+          exit 1
+        fi
+      env:
+        GITHUB_REF: ${{ github.ref }}
+    - name: Check Versions
+      run: |
+        bash ./bin/check-versions.sh ${{ env.VERSION }}
+  php-coding-standards:
+    needs: check-versions
+    name: PHP
+    uses: ./.github/workflows/check-coding-standards.yml
