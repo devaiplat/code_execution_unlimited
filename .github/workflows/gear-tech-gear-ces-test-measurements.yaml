@@ -1,0 +1,144 @@
+name: gear-tech/gear
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  RUSTUP_HOME: /tmp/rustup_home
+  CARGO_TERM_COLOR: always
+  TERM: xterm-256color
+  COUNT: 100
+  BINARYEN_VERSION: version_111
+jobs:
+  build:
+    runs-on:
+    - kuberunner
+    timeout-minutes: 720
+    steps:
+    - name: 'ACTIONS: Checkout'
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: 'Install: Set cargo path'
+      run: echo "/tmp/cargo/bin" >> $GITHUB_PATH
+    - name: 'Install: Rust toolchain'
+      uses: dsherret/rust-toolchain-file@v1
+    - name: 'Show: Versioning'
+      run: ./scripts/gear.sh show
+    - name: 'Install: Build deps'
+      run: |
+        sudo apt update
+
+        sudo apt install -y git clang curl libssl-dev llvm libudev-dev cmake protobuf-compiler wget bzip2
+
+        sudo wget -c https://github.com/WebAssembly/binaryen/releases/download/$BINARYEN_VERSION/binaryen-$BINARYEN_VERSION-x86_64-linux.tar.gz -O - | sudo tar -xz -C .
+
+        sudo cp binaryen-$BINARYEN_VERSION/bin/wasm-opt /usr/bin/
+    - name: 'Build: Gear'
+      run: ./scripts/gear.sh build gear --release --locked --features=runtime-benchmarks
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: 'Collect: Gear workspace tests (ces) (ces)'
+      run: |
+        ./scripts/gear.sh check_extensions
+
+        mkdir -p ./target/analysis/tests/
+
+        mkdir -p ./target/analysis/output/
+
+        cargo build --release --package regression-analysis
+
+        for i in `seq 1 $COUNT`; do echo $i; cargo nextest run --package pallet-* --profile ci --no-fail-fast --release -j1 > ./target/analysis/output/$i 2>&1 || { exit_code=$?; if [ x$exit_code != x0 ]; then cat ./target/analysis/output/$i; fi; exit $exit_code; }; mv ./target/nextest/ci/junit.xml ./target/analysis/tests/$i; done
+
+        ./target/release/regression-analysis collect-data --data-folder-path ./target/analysis/tests/ --output-path ./target/pallet-tests.json
+    - name: 'Generate report: Gear workspace tests (ces)'
+      run: ./target/release/regression-analysis convert --data-folder-path ./target/analysis/tests/ --output-file ./target/action-pallet-output.json
+    - name: 'Collect: pallet-gear benches'
+      run: ./target/release/gear benchmark pallet --pallet=pallet_gear --steps=50 --repeat=20 --chain=dev --extrinsic=* --heap-pages=4096 --output ./target/weights.json --template ./.maintain/regression-analysis-weight-template.hbs
+    - name: 'Generate report: pallet-gear benches'
+      run: |
+        ./target/release/regression-analysis weights --input-file ./target/weights.json --output-file ./target/action-hostfn-weights.json host-fn
+
+        ./target/release/regression-analysis weights --input-file ./target/weights.json --output-file ./target/action-instruction-weights.json instruction
+
+        ./target/release/regression-analysis weights --input-file ./target/weights.json --output-file ./target/action-extrinsic-weights.json extrinsic
+    - name: 'Deploy: Gear workspace tests (ces)'
+      uses: ./.github/actions/deploy-benchmark
+      with:
+        name: Gear workspace tests
+        file: ./target/action-pallet-output.json
+        ssh-deploy-key: ${{ secrets.PERFORMANCE_CHARTS_DEPLOY_KEY }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: 'Deploy: pallet-gear host function weights'
+      uses: ./.github/actions/deploy-benchmark
+      with:
+        name: pallet-gear host function weights
+        file: ./target/action-hostfn-weights.json
+        ssh-deploy-key: ${{ secrets.PERFORMANCE_CHARTS_DEPLOY_KEY }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: 'Deploy: pallet-gear instruction weights'
+      uses: ./.github/actions/deploy-benchmark
+      with:
+        name: pallet-gear instruction weights
+        file: ./target/action-instruction-weights.json
+        ssh-deploy-key: ${{ secrets.PERFORMANCE_CHARTS_DEPLOY_KEY }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: 'Deploy: pallet-gear extrinsic weights'
+      uses: ./.github/actions/deploy-benchmark
+      with:
+        name: pallet-gear extrinsic weights
+        file: ./target/action-extrinsic-weights.json
+        ssh-deploy-key: ${{ secrets.PERFORMANCE_CHARTS_DEPLOY_KEY }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
