@@ -1,0 +1,104 @@
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test-basic-cli-release-arm64:
+    runs-on:
+    - self-hosted
+    - Linux
+    - ARM64
+    steps:
+    - name: clone basic-cli repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: get latest roc nightly (ces) (ces)
+      run: |
+        curl -fOL https://github.com/roc-lang/roc/releases/download/nightly/roc_nightly-linux_arm64-latest.tar.gz
+    - name: rename nightly tar
+      run: mv $(ls | grep "roc_nightly.*tar\.gz") roc_nightly.tar.gz
+    - name: decompress the tar
+      run: tar -xzf roc_nightly.tar.gz
+    - run: rm roc_nightly.tar.gz
+    - name: simplify nightly folder name
+      run: mv roc_nightly* roc_nightly
+    - run: ./roc_nightly/roc version
+    - run: expect -v
+    - run: ROC=./roc_nightly/roc EXAMPLES_DIR=./examples/ ./ci/all_tests.sh
+    - name: Remove roc_nightly folder to keep things simple (we'll download it again later)
+      run: rm -rf roc_nightly
+    - name: Get the repo of the latest basic-cli release (ces)
+      run: |
+        git clone --depth 1 https://github.com/roc-lang/basic-cli
+
+        cd basic-cli
+
+        git fetch --tags
+
+        latestTag=$(git describe --tags $(git rev-list --tags --max-count=1))
+
+        git checkout $latestTag
+    - name: Run all tests with latest roc nightly and latest basic-cli release (ces)
+      run: |
+        sed -i 's/x86_64/arm64/g' ./ci/test_latest_release.sh
+
+        ROC=./roc_nightly/roc EXAMPLES_DIR=./basic-cli/examples/ ./ci/test_latest_release.sh
+name: roc-lang/roc
