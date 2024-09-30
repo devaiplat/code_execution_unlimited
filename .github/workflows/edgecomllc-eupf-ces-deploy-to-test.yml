@@ -1,0 +1,29 @@
+name: edgecomllc/eupf
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  use-build:
+    uses: ./.github/workflows/build.yml
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    name: deploy to test
+    needs: use-build
+    with:
+      kube_context: edgecom-test
+      environment_name: test
+      helm_cmd_args: --wait --timeout 60s --values .deploy/helm/values/test.yaml
+    secrets:
+      kube_config: ${{ secrets.KUBE_CONFIG_TEST }}
