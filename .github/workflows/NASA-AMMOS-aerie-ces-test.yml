@@ -1,0 +1,210 @@
+name: NASA-AMMOS/aerie
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  AERIE_USERNAME: ${{secrets.AERIE_USERNAME}}
+  AERIE_PASSWORD: ${{secrets.AERIE_PASSWORD}}
+  HASURA_GRAPHQL_ADMIN_SECRET: ${{secrets.HASURA_GRAPHQL_ADMIN_SECRET}}
+  HASURA_GRAPHQL_JWT_SECRET: ${{secrets.HASURA_GRAPHQL_JWT_SECRET}}
+  POSTGRES_USER: ${{secrets.POSTGRES_USER}}
+  POSTGRES_PASSWORD: ${{secrets.POSTGRES_PASSWORD}}
+  GATEWAY_USERNAME: ${{secrets.GATEWAY_USERNAME}}
+  GATEWAY_PASSWORD: ${{secrets.GATEWAY_PASSWORD}}
+  MERLIN_USERNAME: ${{secrets.MERLIN_USERNAME}}
+  MERLIN_PASSWORD: ${{secrets.MERLIN_PASSWORD}}
+  SCHEDULER_USERNAME: ${{secrets.SCHEDULER_USERNAME}}
+  SCHEDULER_PASSWORD: ${{secrets.SCHEDULER_PASSWORD}}
+  SEQUENCING_USERNAME: ${{secrets.SEQUENCING_USERNAME}}
+  SEQUENCING_PASSWORD: ${{secrets.SEQUENCING_PASSWORD}}
+jobs:
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+    - name: Validate Gradle Wrapper
+      uses: gradle/wrapper-validation-action@v2
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Assemble
+      run: ./gradlew assemble --parallel
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Unit Tests (ces) (ces)
+      run: ./gradlew test --parallel
+    - name: Upload Test Results as XML and HTML (ces)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Unit Test Results
+        path: >
+          **/build/test-results/test
+
+          **/build/reports/tests/test
+  e2e-test:
+    runs-on: ubuntu-latest
+    environment: e2e-test
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 21
+    - name: Setup Postgres Client (psql)
+      run: |
+        sudo apt-get update
+
+        sudo apt-get install --yes postgresql-client
+    - name: Validate Gradle Wrapper
+      uses: gradle/wrapper-validation-action@v2
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+    - name: Assemble
+      run: ./gradlew assemble --parallel
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build scheduling procedure jars for testing (ces) (ces)
+      run: ./gradlew procedural:examples:foo-procedures:buildAllSchedulingProcedureJars
+    - name: Start Services
+      run: |
+        docker compose -f ./e2e-tests/docker-compose-test.yml up -d --build
+
+        docker images
+
+        docker ps -a
+    - name: Sleep for 30 Seconds
+      run: sleep 30s
+      shell: bash
+    - name: Run E2E Tests (ces)
+      run: ./gradlew e2eTest
+    - name: Upload E2E Test Results (ces)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: E2E Test Results
+        path: >
+          **/e2e-tests/build/reports/tests/e2eTest
+
+          **/db-tests/build/reports/tests/e2eTest
+
+          **/sequencing-server/test-report.*
+    - name: Print Logs for Services
+      if: always()
+      run: docker compose -f ./e2e-tests/docker-compose-test.yml logs -t
+    - name: Stop Services
+      if: always()
+      run: |
+        docker ps -a
+
+        docker compose -f ./e2e-tests/docker-compose-test.yml down
+
+        docker ps -a
+    - name: Prune Volumes
+      if: always()
+      run: docker volume prune --force
