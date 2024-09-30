@@ -1,0 +1,54 @@
+name: blockscout/frontend
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  publish_image:
+    name: Publish Docker image
+    uses: ./.github/workflows/publish-image.yml
+    secrets: inherit
+  deploy_e2e:
+    name: Deploy E2E instance
+    needs: publish_image
+    runs-on: ubuntu-latest
+    permissions: write-all
+    steps:
+    - name: Get Vault credentials
+      id: retrieve-vault-secrets
+      uses: hashicorp/vault-action@v2.4.1
+      with:
+        url: https://vault.k8s.blockscout.com
+        role: ci-dev
+        path: github-jwt
+        method: jwt
+        tlsSkipVerify: false
+        exportToken: true
+        secrets: >
+          ci/data/dev/github token | WORKFLOW_TRIGGER_TOKEN ;
+    - name: Trigger deploy
+      uses: convictional/trigger-workflow-and-wait@v1.6.1
+      with:
+        owner: blockscout
+        repo: deployment-values
+        github_token: ${{ env.WORKFLOW_TRIGGER_TOKEN }}
+        workflow_file_name: deploy_blockscout.yaml
+        ref: main
+        wait_interval: 30
+        client_payload: '{ "instance": "dev", "globalEnv": "e2e"}'
+  test:
+    name: Run tests
+    needs: deploy_e2e
+    uses: blockscout/blockscout-ci-cd/.github/workflows/e2e_new.yaml@master
+    secrets: inherit
