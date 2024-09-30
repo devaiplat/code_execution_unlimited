@@ -1,0 +1,35 @@
+name: SAP/terraform-provider-btp
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  execute_regression_test:
+    name: Regression Test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out Git repository
+      id: checkout_repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Go
+      uses: actions/setup-go@v5.0.2
+      with:
+        go-version-file: go.mod
+    - name: Download deps
+      id: build_provider
+      shell: bash
+      run: go mod tidy
