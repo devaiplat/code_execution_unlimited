@@ -1,0 +1,267 @@
+name: huggingface/huggingface_hub
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    env:
+      UV_HTTP_TIMEOUT: 600
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+        - 3.8
+        - 3.11
+        test_name:
+        - Repository only
+        - Everything else
+        - torch_1.11
+        - torch_latest
+        include:
+        - python-version: 3.11
+          test_name: lfs
+        - python-version: 3.8
+          test_name: fastai
+        - python-version: 3.10
+          test_name: fastai
+        - python-version: 3.8
+          test_name: tensorflow
+        - python-version: 3.10
+          test_name: tensorflow
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Setup venv + uv
+      run: |
+        pip install --upgrade uv
+
+        uv venv
+    - name: Install dependencies
+      run: |
+        uv pip install "huggingface_hub[testing] @ ."
+
+
+        case "${{ matrix.test_name }}" in
+
+          "Repository only" | "Everything else")
+            sudo apt update
+            sudo apt install -y libsndfile1-dev
+            ;;
+
+          lfs)
+            git config --global user.email "ci@dummy.com"
+            git config --global user.name "ci"
+            ;;
+
+          fastai)
+            uv pip install "huggingface_hub[fastai] @ ."
+            ;;
+
+          torch_latest)
+            uv pip install "huggingface_hub[torch] @ ."
+            uv pip install --upgrade torch
+            ;;
+
+          torch_1.11)
+            uv pip install "huggingface_hub[torch] @ ."
+            uv pip install torch~=1.11
+            ;;
+
+          tensorflow)
+            sudo apt update
+            sudo apt install -y graphviz
+            uv pip install "huggingface_hub[tensorflow-testing] @ ."
+            ;;
+
+        esac
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      working-directory: ./src
+      run: |
+        source ../.venv/bin/activate
+
+        PYTEST="python -m pytest --cov=./huggingface_hub --cov-report=xml:../coverage.xml --vcr-record=none --reruns 8 --reruns-delay 2 --only-rerun '(OSError|Timeout|HTTPError.*502|HTTPError.*504||not less than or equal to 0.01)'"
+
+
+        case "${{ matrix.test_name }}" in
+
+          "Repository only")
+            # Run repo tests concurrently
+            PYTEST="$PYTEST ../tests -k 'TestRepository' -n 4"
+            echo $PYTEST
+            eval $PYTEST
+          ;;
+
+          "Everything else")
+            PYTEST="$PYTEST ../tests -k 'not TestRepository' -n 4"
+            echo $PYTEST
+            eval $PYTEST
+          ;;
+
+          lfs)
+            eval "RUN_GIT_LFS_TESTS=1 $PYTEST ../tests -k 'HfLargefilesTest'"
+          ;;
+
+
+          fastai)
+            eval "$PYTEST ../tests/test_fastai*"
+          ;;
+
+          tensorflow)
+            # Cannot be on same line since '_tf*' checks if tensorflow is NOT imported by default
+            eval "$PYTEST ../tests/test_tf*"
+            eval "$PYTEST ../tests/test_keras*"
+            eval "$PYTEST ../tests/test_serialization.py"
+          ;;
+
+          torch_1.11 | torch_latest)
+          eval "$PYTEST ../tests/test_hub_mixin*"
+          eval "$PYTEST ../tests/test_serialization.py"
+          ;;
+
+        esac
+    - name: Upload coverage reports to Codecov with GitHub Action
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        verbose: true
+  build-windows:
+    runs-on: windows-latest
+    env:
+      DISABLE_SYMLINKS_IN_WINDOWS_TESTS: 1
+      UV_HTTP_TIMEOUT: 600
+      GIT_CLONE_PROTECTION_ACTIVE: false
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+        - 3.8
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Setup venv + uv
+      run: |
+        pip install --upgrade uv
+
+        uv venv
+    - name: Install dependencies
+      run: uv pip install "huggingface_hub[testing] @ ."
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      working-directory: ./src
+      run: |
+        ..\.venv\Scripts\activate
+
+        python -m pytest -n 4 --cov=./huggingface_hub --cov-report=xml:../coverage.xml --vcr-record=none --reruns 8 --reruns-delay 2 --only-rerun '(OSError|Timeout|HTTPError.*502|HTTPError.*504|not less than or equal to 0.01)' ../tests
+    - name: Upload coverage reports to Codecov with GitHub Action
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage.xml
+        verbose: true
