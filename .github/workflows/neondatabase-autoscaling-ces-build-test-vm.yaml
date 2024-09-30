@@ -1,0 +1,69 @@
+name: neondatabase/autoscaling
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  IMG_POSTGRES_16_BULLSEYE: neondatabase/vm-postgres-16-bullseye
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+jobs:
+  tags:
+    outputs:
+      vm-postgres-16-bullseye: ${{ steps.show-tags.outputs.vm-postgres-16-bullseye }}
+    runs-on: ubuntu-latest
+    steps:
+    - id: show-tags
+      run: |
+        echo "vm-postgres-16-bullseye=${{ env.IMG_POSTGRES_16_BULLSEYE }}:${{ inputs.tag }}" | tee -a $GITHUB_OUTPUT
+  build:
+    if: true
+    needs: tags
+    runs-on:
+    - self-hosted
+    - gen3
+    - large
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache: false
+      timeout-minutes: 10
+    - run: make bin/vm-builder
+    - name: upload vm-builder
+      if: ${{ format('{0}', inputs.upload-vm-builder) == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: vm-builder
+        path: bin/vm-builder
+        if-no-files-found: error
+        retention-days: 2
+    - name: set custom docker config directory
+      uses: ./.github/actions/set-docker-config-dir
+    - name: login to docker hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.NEON_DOCKERHUB_USERNAME }}
+        password: ${{ secrets.NEON_DOCKERHUB_PASSWORD }}
+    - name: build ${{ needs.tags.outputs.vm-postgres-16-bullseye }}
+      run: |
+        ./bin/vm-builder -src postgres:16-bullseye -spec tests/e2e/image-spec.yaml -dst ${{ needs.tags.outputs.vm-postgres-16-bullseye }}
+    - name: docker push ${{ needs.tags.outputs.vm-postgres-16-bullseye }}
+      run: |
+        docker push ${{ needs.tags.outputs.vm-postgres-16-bullseye }}
