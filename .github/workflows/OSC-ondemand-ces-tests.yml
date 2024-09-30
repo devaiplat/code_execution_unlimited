@@ -1,0 +1,365 @@
+name: OSC/ondemand
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-latest
+        ruby:
+        - 2.7.1
+        bundler:
+        - 2.1.4
+        include:
+        - os: ubuntu-latest
+          ruby: 3.0.2
+          bundler: 2.3.5
+        - os: ubuntu-latest
+          ruby: 3.1.2
+          bundler: 2.3.7
+        - os: ubuntu-latest
+          ruby: 3.2.2
+          bundler: 2.4.10
+    runs-on: ${{ matrix.os }}
+    name: Unit tests
+    steps:
+    - name: Checkout ${{ github.sha	}}
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Ruby ${{ matrix.ruby }} using Bundler ${{ matrix.bundler }}
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: ${{ matrix.ruby }}
+        bundler: ${{ matrix.bundler }}
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/vendor/bundle
+        key: ${{ runner.os }}-${{ matrix.ruby }}-unit-gems-${{ hashFiles('apps/*/Gemfile.lock', 'Gemfile.lock') }}-1
+    - name: Setup Bundler
+      run: |
+        bundle config path ~/vendor/bundle
+
+        bundle install
+
+        gem install rake
+    - name: Setup rclone
+      run: sudo apt-get update && sudo apt-get install rclone
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run unit tests (ces) (ces)
+      run: bundle exec rake test:unit
+    - name: Run ShellCheck
+      run: bundle exec rake test:shellcheck
+    - name: Check file encodings
+      run: bundle exec rake test:unix
+    - name: Run Zeitwerk check
+      run: |
+        cd apps/dashboard
+
+        bundle install
+
+        bundle exec rake zeitwerk:check
+    - name: Run lint tests (ces)
+      run: bundle exec rake lint || true
+    - name: Run System Dashboard tests (ces)
+      run: cd apps/dashboard; bin/rake test:system
+    - name: Upload system test failures. (ces)
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: system-test-failures-${{ matrix.ruby }}
+        path: >
+          apps/dashboard/tmp/screenshots/*.png
+
+          apps/dashboard/log/test.log
+  k8s-tests:
+    runs-on: ubuntu-latest
+    name: Kubernetes tests
+    steps:
+    - name: Checkout ${{ github.sha	}}
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Create kind cluster
+      uses: container-tools/kind-action@v2
+    - name: Apply ondemand RBAC
+      run: kubectl apply -f hooks/k8s-bootstrap/ondemand.yaml
+    - name: Get ondemand token
+      id: token
+      run: |
+        TOKEN=$(kubectl create token ondemand --namespace=ondemand)
+
+        echo "ondemand=${TOKEN}" >> $GITHUB_OUTPUT
+    - name: Setup kubectl
+      run: |
+        kubectl config set-credentials ondemand --token="${{ steps.token.outputs.ondemand }}"
+
+        kubectl config set-context kind-kind --user=ondemand
+
+        kubectl config use-context kind-kind
+
+        kubectl cluster-info
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test k8s-bootstrap (ces) (ces)
+      run: /bin/bash hooks/k8s-bootstrap/k8s-bootstrap-ondemand.sh test hooks/hook.env.example
+  e2e-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-22.04
+        dist:
+        - el8
+        - el9
+        - amzn2023
+        - ubuntu-20.04
+        - ubuntu-22.04
+        - ubuntu-24.04
+        - debian-12
+        arch:
+        - x86_64
+        - aarch64
+        - ppc64le
+        version:
+        - 3.1
+        exclude:
+        - dist: amzn2023
+          arch: aarch64
+        - dist: amzn2023
+          arch: ppc64le
+        - dist: ubuntu-20.04
+          arch: ppc64le
+        - dist: ubuntu-22.04
+          arch: ppc64le
+    runs-on: ${{ matrix.os }}
+    name: E2E test ${{ matrix.dist }}-${{ matrix.arch }}
+    steps:
+    - name: Checkout ${{ github.sha	}}
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Ruby using Bundler
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: 2.7.1
+        bundler: 2.1.4
+        bundler-cache: true
+    - name: Build package
+      if: matrix.arch == 'x86_64'
+      run: bundle exec rake package:build[${{ matrix.dist }},${{ matrix.arch }}]
+      env:
+        VERSION: ${{ matrix.version }}.0
+        OOD_PACKAGING_DEBUG: true
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run package tests (ces) (ces)
+      if: matrix.arch == 'x86_64'
+      run: bundle exec rake test:e2e
+      env:
+        BEAKER_set: ${{ matrix.dist }}
+        OOD_BUILD_REPO: ${{ matrix.version }}
+    - name: arch distro
+      if: ${{ matrix.arch != 'x86_64' && github.event_name == 'schedule' }}
+      run: |
+        DISTRO=$(echo "${{ matrix.os }}" | sed 's|\-||g')
+
+        echo "DISTRO=${DISTRO}" >> $GITHUB_ENV
+
+        if [ "${{ matrix.arch }}" == "aarch64" ]; then
+          echo "PLATFORM=linux/arm64" >> $GITHUB_ENV
+        fi
+
+        if [ "${{ matrix.arch }}" == "ppc64le" ]; then
+          echo "PLATFORM=linux/ppc64le" >> $GITHUB_ENV
+        fi
+    - name: Test OnDemand (ces)
+      if: ${{ matrix.arch != 'x86_64' && github.event_name == 'schedule' }}
+      uses: uraimo/run-on-arch-action@v2
+      with:
+        arch: ${{ matrix.arch }}
+        distro: ${{ env.DISTRO }}
+        githubToken: ${{ github.token }}
+        install: >
+          apt update -y
+
+          apt install -y ruby-bundler ruby-dev build-essential git \
+            apt-transport-https ca-certificates curl software-properties-common
+          # Not available for ppc64le
+
+          # apt install -y chromium-chromedriver
+
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+          apt update -y
+
+          apt install -y docker-ce
+        dockerRunArgs: >
+          --platform ${{ env.PLATFORM }}
+        run: |
+          git config --global --add safe.directory $GITHUB_WORKSPACE
+
+          bundle install
+
+          bundle exec rake package:build[${{ matrix.dist }},${{ matrix.arch }}]
+
+          # e2e tests fail with issues accessing chorium
+
+          # bundle exec rake test:e2e
+        env: >
+          VERSION: "${{ matrix.version }}.0"
+
+          OOD_PACKAGING_DEBUG: 'true'
+
+          BEAKER_set: ${{ matrix.dist }}-${{ matrix.arch }}
+
+          OOD_BUILD_REPO: ${{ matrix.version }}
+
+          DOCKER_IN_DOCKER: 'true'
+    - name: Debug failure
+      if: failure()
+      run: |
+        find tmp/e2e_ctr/ -type f -name *.log -exec cat {} +
