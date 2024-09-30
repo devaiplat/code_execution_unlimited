@@ -1,0 +1,203 @@
+name: streamlit/streamlit
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-javascript
+  cancel-in-progress: true
+jobs:
+  js-unit-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Checkout Streamlit code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        persist-credentials: false
+        submodules: recursive
+        fetch-depth: 2
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Set Python version vars
+      uses: ./.github/actions/build_info
+    - name: Set up Python ${{ env.PYTHON_MAX_VERSION }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_MAX_VERSION }}
+    - name: Setup virtual env
+      uses: ./.github/actions/make_init
+    - name: Run make develop
+      run: make develop
+    - name: Run make protobuf
+      run: make protobuf
+    - name: Run make frontend-lib
+      run: make frontend-lib
+    - name: Audit frontend licenses
+      run: ./scripts/audit_frontend_licenses.py
+    - name: Run linters
+      run: |
+        # Run eslint as a standalone command to generate the test report.
+
+        # We need to --hook-stage manual to trigger Typecheck too
+
+        PRE_COMMIT_NO_CONCURRENCY=true SKIP=eslint,ruff,ruff-format pre-commit run --hook-stage manual --show-diff-on-failure --color=always --all-files
+
+        # Run eslint using Makefile omitting the pre-commit
+
+        make jslint
+    - name: Validate NOTICES
+      run: |
+        # Run `make notices`. If it results in changes, warn the user and fail.
+
+        make notices
+
+
+        git_status=$(git status --porcelain -- NOTICES)
+
+        if [[ -n $git_status ]]; then
+          echo "::error::The NOTICES file is out of date! Please run \`make notices\` and commit the result."
+          echo "::group::git diff NOTICES"
+          git diff NOTICES
+          echo "::endgroup::"
+          exit 1
+        else
+          echo "NOTICES is up to date."
+        fi
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run frontend tests (ces) (ces)
+      run: make jstestcoverage
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage_report_jest
+        path: >
+          frontend/lib/coverage
+
+          frontend/app/coverage
+        retention-days: 7
+  components-lib-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Checkout Streamlit code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        persist-credentials: false
+        submodules: recursive
+        fetch-depth: 2
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20.x
+        cache: yarn
+        cache-dependency-path: component-lib/yarn.lock
+    - name: Install node dependencies
+      working-directory: component-lib
+      run: yarn install
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run frontend tests (ces) (ces)
+      working-directory: component-lib
+      run: yarn test
+    - name: Build package
+      working-directory: component-lib
+      run: yarn build
