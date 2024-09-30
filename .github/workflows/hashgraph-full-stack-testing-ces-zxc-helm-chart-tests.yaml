@@ -1,0 +1,174 @@
+name: hashgraph/full-stack-testing
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+defaults:
+  run:
+    shell: bash
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+  pull-requests: write
+  checks: write
+  statuses: write
+jobs:
+  test:
+    name: ${{ inputs.custom-job-label || 'Helm Chart Test' }} (${{ matrix.scriptName }})
+    runs-on: solo-linux-medium
+    strategy:
+      fail-fast: false
+      matrix:
+        scriptName:
+        - direct-install.sh
+        - nmt-install.sh
+    steps:
+    - name: Setup Make
+      run: |
+        if ! command -v make >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y make
+        fi
+    - name: Checkout Code
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        fetch-depth: ${{ inputs.enable-spotless-check && '0' || '' }}
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Get changed files related to charts
+      id: changed-files
+      uses: tj-actions/changed-files@e9772d140489982e0e3704fea5ee93d536f1e275
+      with:
+        files_yaml: >
+          chart:
+            - charts/**
+            - .github/workflows/support/**
+          scripts:
+            - dev/**
+    - name: List all changed files related to charts
+      id: check-changed-files
+      run: |
+        echo "Modified charts files"
+
+        echo "-------------------------------------------------------------------"
+
+        for file in ${{ steps.changed-files.outputs.chart_all_changed_files }}; do
+          echo " - ${file} was changed"
+        done
+
+        echo ""
+
+        echo "Modified script files"
+
+        echo "-------------------------------------------------------------------"
+
+        for file in ${{ steps.changed-files.outputs.scripts_all_changed_files }}; do
+          echo " - ${file} was changed"
+        done
+
+        echo ""
+
+        echo " github.event_name = ${{ github.event_name }}"
+
+        if [[ "${{ steps.changed-files.outputs.scripts_any_changed }}" == "true" || "${{ steps.changed-files.outputs.chart_any_changed }}" == "true" ]]; then
+          echo "run-tests=true" >> "${GITHUB_OUTPUT}"
+          echo "Executing helm chart tests...."
+        elif [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
+          echo "run-tests=true" >> "${GITHUB_OUTPUT}"
+          echo "Executing helm chart tests due to workflow dispatch"
+        else
+          echo ">> No relevant files are changed. No need to run helm chart tests"
+        fi
+    - name: Initialize Job Variables
+      id: vars
+      if: ${{ steps.check-changed-files.outputs.run-tests && !cancelled() && !failure() }}
+      run: |
+        echo "script_name=${{ matrix.scriptName }}" >> "${GITHUB_OUTPUT}"
+    - name: Install wget
+      run: |
+        sudo apt-get update
+
+        sudo apt-get install -y wget
+    - name: Setup Kind
+      uses: helm/kind-action@0025e74a8c7512023d06dc019c617aa3cf561fde
+      if: ${{ steps.check-changed-files.outputs.run-tests && !cancelled() && !failure() }}
+      with:
+        node_image: kindest/node:v1.27.3@sha256:3966ac761ae0136263ffdb6cfd4db23ef8a83cba8a463690e98317add2c9ba72
+        config: .github/workflows/support/dev-cluster.yaml
+        version: v0.20.0
+        verbosity: 3
+        wait: 120s
+    - name: Setup Helm
+      uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814
+      if: ${{ steps.check-changed-files.outputs.run-tests && !cancelled() && !failure() }}
+      with:
+        version: v3.12.3
+    - name: Kubernetes Cluster Info
+      if: ${{ steps.check-changed-files.outputs.run-tests && !cancelled() && !failure() }}
+      run: |
+        kubectl config get-contexts
+
+        kubectl get crd
+
+        kubectl get node --show-labels
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Helm Chart Test (ces) (ces)
+      working-directory: .github/workflows/support
+      if: ${{ steps.check-changed-files.outputs.run-tests && !cancelled() && !failure() }}
+      run: |
+        export SCRIPT_NAME="${{ steps.vars.outputs.script_name}}"
+
+        source ci_test.sh
