@@ -1,0 +1,145 @@
+name: g3w-suite/g3w-admin
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  ci_tests:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        qgis_version:
+        - ltr
+        - latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Extract branch name
+      shell: bash
+      run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
+      id: extract_branch
+    - name: Starting Docker compose
+      run: docker compose -f docker-compose.${{ matrix.qgis_version }}.yml up -d
+    - name: Copying code into the container
+      run: |
+        docker cp ./ "$(docker compose -f docker-compose.${{ matrix.qgis_version }}.yml ps -q g3w-suite)":/code
+    - name: Installing Python requirements
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/ && pip3 install -r requirements_docker.txt && pip3 install -r requirements_huey.txt"
+    - name: Installing Caching Python requirements
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/ && pip3 install -r g3w-admin/caching/requirements.txt"
+    - name: Installing Filemanager Python requirements
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/ && pip3 install -r g3w-admin/filemanager/requirements.txt"
+    - name: Installing Qplotly Python requirements
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/ && pip3 install -r g3w-admin/qplotly/requirements.txt"
+    - name: Installing Openrouteservice Python requirements
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/ && pip3 install -r g3w-admin/openrouteservice/requirements.txt && pip3 install -r g3w-admin/openrouteservice/requirements_testing.txt"
+    - name: Building g3w-suite
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "/code/ci_scripts/build_suite.sh"
+    - name: Setting up g3w-suite
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "/code/ci_scripts/setup_suite.sh"
+    - name: Starting Django
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py runserver 0.0.0.0:8000" &
+    - name: Waiting for Django
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "wait-for-it -h localhost -p 8000 -t 240"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Running g3w-admin core tests (ces) (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test core"
+    - name: Running g3w-admin qdjango tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test qdjango"
+    - name: Running g3w-admin usersmanage tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test usersmanage"
+    - name: Running g3w-admin client tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test client"
+    - name: Running g3w-admin editing tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test editing.tests"
+    - name: Running g3w-admin caching tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test caching"
+    - name: Running g3w-admin filemanager tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test filemanager"
+    - name: Running g3w-admin qplotly tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test qplotly"
+    - name: Running g3w-admin openrouteservice tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test openrouteservice"
+    - name: Running g3w-admin qtimeseries tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test qtimeseries"
+    - name: Running g3w-admin about tests (ces)
+      run: |
+        docker compose -f docker-compose.${{ matrix.qgis_version }}.yml exec -T g3w-suite sh -c "cd /code/g3w-admin && python3 manage.py test about"
+    - name: Setup tmate session
+      if: ${{ failure() }}
+      uses: mxschmitt/action-tmate@v3
+      with:
+        limit-access-to-actor: true
