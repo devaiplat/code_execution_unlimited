@@ -1,0 +1,123 @@
+name: Lightning-AI/litgpt
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+defaults:
+  run:
+    shell: bash
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+jobs:
+  cpu-tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: macOS-14
+          python-version: 3.10
+        - os: ubuntu-22.04
+          python-version: 3.11
+        - os: ubuntu-22.04
+          python-version: 3.10
+        - os: ubuntu-22.04
+          python-version: 3.9
+        - os: windows-2022
+          python-version: 3.9
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+        cache-dependency-path: >
+          pyproject.toml
+    - name: Install minimal dependencies
+      run: |
+        # python -m pip install --upgrade pip
+
+        pip install .
+
+        pip list
+
+        # make sure all modules are still importable with only the minimal dependencies available
+
+        modules=$(
+          find litgpt -type f -name "*.py" | \
+          sed 's/\.py$//' | sed 's/\//./g' | \
+          sed 's/.__init__//g' | xargs -I {} echo "import {};"
+        )
+
+        echo "$modules"
+
+        python -c "$modules"
+    - name: Install all dependencies
+      run: |
+        pip install '.[all,test]'
+
+        pip list
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: |
+        pytest -v --disable-pytest-warnings --strict-markers --color=yes --timeout 120
