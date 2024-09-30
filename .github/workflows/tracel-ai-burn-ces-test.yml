@@ -1,0 +1,420 @@
+name: tracel-ai/burn
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  RUST_PREVIOUS_VERSION: 1.80.0
+  CARGO_TERM_COLOR: always
+  VULKAN_SDK_VERSION: 1.3.268
+  MESA_VERSION: 23.3.1
+  MESA_CI_BINARY_BUILD: build18
+  WARP_VERSION: 1.0.8
+  DXC_RELEASE: v1.7.2308
+  DXC_FILENAME: dxc_2023_08_14.zip
+  GRCOV_LINK: https://github.com/mozilla/grcov/releases/download
+  GRCOV_VERSION: 0.8.19
+  TYPOS_LINK: https://github.com/crate-ci/typos/releases/download
+  TYPOS_VERSION: 1.23.4
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  prepare-checks:
+    runs-on: ubuntu-latest
+    outputs:
+      rust-prev-version: ${{ env.RUST_PREVIOUS_VERSION }}
+    steps:
+    - name: Do Nothing
+      if: false
+      run: echo
+  code-quality:
+    runs-on: ubuntu-22.04
+    needs: prepare-checks
+    strategy:
+      matrix:
+        rust:
+        - stable
+        include:
+        - rust: stable
+          toolchain: stable
+    steps:
+    - name: Setup Rust
+      uses: tracel-ai/github-actions/setup-rust@v1
+      with:
+        rust-toolchain: ${{ matrix.toolchain }}
+        cache-key: ${{ matrix.rust }}-linux
+    - name: Audit
+      run: cargo xtask check audit
+    - name: Format
+      shell: bash
+      env:
+        TERM: xterm-256color
+      run: cargo xtask check format
+    - name: Lint
+      run: cargo xtask check lint
+    - name: Typos
+      uses: tracel-ai/github-actions/check-typos@v1
+  documentation:
+    runs-on: ubuntu-22.04
+    needs: prepare-checks
+    strategy:
+      matrix:
+        rust:
+        - stable
+        include:
+        - rust: stable
+          toolchain: stable
+    steps:
+    - name: Setup Rust
+      uses: tracel-ai/github-actions/setup-rust@v1
+      with:
+        rust-toolchain: ${{ matrix.toolchain }}
+        cache-key: ${{ matrix.rust }}-linux
+    - name: Documentation Build
+      run: cargo xtask doc build
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Documentation Tests (ces) (ces)
+      run: cargo xtask doc tests
+  linux-std-tests:
+    runs-on: ubuntu-22.04
+    needs: prepare-checks
+    strategy:
+      matrix:
+        rust:
+        - stable
+        - prev
+        include:
+        - rust: stable
+          toolchain: stable
+          coverage: --enable-coverage
+        - rust: prev
+          toolchain: ${{ needs.prepare-checks.outputs.rust-prev-version }}
+    steps:
+    - name: Setup Rust
+      uses: tracel-ai/github-actions/setup-rust@v1
+      with:
+        rust-toolchain: ${{ matrix.toolchain }}
+        cache-key: ${{ matrix.rust }}-linux
+    - name: Setup Linux runner
+      uses: tracel-ai/github-actions/setup-linux@v1
+      with:
+        vulkan-sdk-version: ${{ env.VULKAN_SDK_VERSION }}
+        mesa-version: ${{ env.MESA_VERSION }}
+        mesa-ci-build-version: ${{ env.MESA_CI_BINARY_BUILD }}
+        cargo-package-to-clean: burn-tch
+    - name: Install grcov
+      if: matrix.rust == 'stable'
+      shell: bash
+      run: |
+        curl -L "$GRCOV_LINK/v$GRCOV_VERSION/grcov-x86_64-unknown-linux-musl.tar.bz2" |
+
+        tar xj -C $HOME/.cargo/bin
+
+        cargo xtask coverage install
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Tests (ces) (ces)
+      run: cargo xtask ${{ matrix.coverage }} test --ci
+    - name: Generate lcov.info
+      if: matrix.rust == 'stable'
+      run: cargo xtask coverage generate --ignore "/*,xtask/*,examples/*"
+    - name: Codecov upload lcov.info
+      if: matrix.rust == 'stable'
+      uses: codecov/codecov-action@v4
+      with:
+        files: lcov.info
+        token: ${{ secrets.CODECOV_TOKEN }}
+  linux-no-std-tests:
+    runs-on: ubuntu-22.04
+    needs: prepare-checks
+    strategy:
+      matrix:
+        rust:
+        - stable
+        - prev
+        include:
+        - rust: stable
+          toolchain: stable
+        - rust: prev
+          toolchain: ${{ needs.prepare-checks.outputs.rust-prev-version }}
+    steps:
+    - name: Setup Rust
+      uses: tracel-ai/github-actions/setup-rust@v1
+      with:
+        rust-toolchain: ${{ matrix.toolchain }}
+        cache-key: ${{ matrix.rust }}-linux-no-std
+    - name: Setup Linux runner
+      uses: tracel-ai/github-actions/setup-linux@v1
+      with:
+        vulkan-sdk-version: ${{ env.VULKAN_SDK_VERSION }}
+        mesa-version: ${{ env.MESA_VERSION }}
+        mesa-ci-build-version: ${{ env.MESA_CI_BINARY_BUILD }}
+    - name: Crates Build
+      run: cargo xtask --execution-environment no-std build --ci
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Crates Tests (ces) (ces)
+      run: cargo xtask --execution-environment no-std test --ci
+  windows-std-tests:
+    runs-on: windows-2022
+    needs: prepare-checks
+    env:
+      DISABLE_WGPU: 1
+    strategy:
+      matrix:
+        rust:
+        - stable
+        include:
+        - rust: stable
+          toolchain: stable
+    steps:
+    - name: Setup Rust
+      uses: tracel-ai/github-actions/setup-rust@v1
+      with:
+        rust-toolchain: ${{ matrix.toolchain }}
+        cache-key: ${{ matrix.rust }}-windows
+    - name: Setup Windows runner
+      if: env.DISABLE_WGPU != '1'
+      uses: tracel-ai/github-actions/setup-windows@v1
+      with:
+        dxc-release: ${{ env.DXC_RELEASE }}
+        dxc-filename: ${{ env.DXC_FILENAME }}
+        mesa-version: ${{ env.MESA_VERSION }}
+        warp-version: ${{ env.WARP_VERSION }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Tests (ces) (ces)
+      run: cargo xtask test --ci
+  macos-std-tests:
+    runs-on: blaze/macos-14
+    needs: prepare-checks
+    strategy:
+      matrix:
+        rust:
+        - stable
+        include:
+        - rust: stable
+          toolchain: stable
+    steps:
+    - name: Setup Rust
+      uses: tracel-ai/github-actions/setup-rust@v1
+      with:
+        rust-toolchain: ${{ matrix.toolchain }}
+        cache-key: ${{ matrix.rust }}-macos
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Tests (ces) (ces)
+      run: cargo xtask test --ci
