@@ -1,0 +1,43 @@
+name: serlo/frontend
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./e2e-tests
+    steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - run: yarn
+    - run: yarn playwright install --with-deps chromium
+    - uses: patrickedqvist/wait-for-vercel-preview@v1.3.1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        max_timeout: 1200
+        check_interval: 20
+    - run: yarn e2e-workers
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: e2e-screenshots-on-fail
+        path: e2e-tests/output/
