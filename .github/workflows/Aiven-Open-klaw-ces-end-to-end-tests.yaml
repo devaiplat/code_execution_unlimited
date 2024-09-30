@@ -1,0 +1,189 @@
+name: Aiven-Open/klaw
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  end-to-end-tests:
+    permissions:
+      actions: write
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set Node and pnpm versions
+      id: versions
+      working-directory: ./e2e
+      shell: bash
+      run: |
+        NODE_VERSION=$(jq -r '.engines.node' package.json)
+
+        PNPM_VERSION=$(jq -r '.engines.pnpm' package.json)
+
+        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+
+        echo "PNPM_VERSION=$PNPM_VERSION" >> $GITHUB_OUTPUT
+    - name: Setup node.js
+      uses: actions/setup-node@0a44ba7841725637a19e28fa30b79a866c81b0a6
+      with:
+        node-version: ${{ steps.versions.outputs.NODE_VERSION }}
+    - name: Setup pnpm
+      uses: pnpm/action-setup@fe02b34f77f8bc703788d5817da081398fad5dd2
+      with:
+        version: ${{ steps.versions.outputs.PNPM_VERSION }}
+        run_install: false
+    - name: Get pnpm store directory
+      id: pnpm-cache
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+    - name: Setup pnpm cache
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: >
+          ${{ runner.os }}-pnpm-store-
+    - name: Set up JDK
+      uses: actions/setup-java@2dfa2011c5b2a0f1489bf9e433881c92c1631f88
+      with:
+        java-version: 20
+        distribution: temurin
+        cache: maven
+    - name: Build Klaw
+      working-directory: ./e2e
+      run: pnpm __build-klaw
+    - name: Get container network address
+      id: containerIp
+      shell: bash
+      run: |
+        container_name="klaw-core"
+
+        container_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container_name")
+
+
+        if [ -n "$container_ip" ]; then
+          echo "Container is running at IP address: $container_ip"
+          echo "CONTAINER_IP=$container_ip" >> $GITHUB_OUTPUT
+        else
+          echo "Container not found or not running"
+          exit 1
+        fi
+    - name: Make sure Klaw is reachable
+      id: klaw-build-reachable
+      run: |
+        retries=5  # Number of retries
+
+        interval=5  # Initial retry interval in seconds
+
+        max_interval=30  # Max retry interval in seconds
+
+        success=false
+
+
+        echo "Check that Klaw is running on ${{ steps.containerIp.outputs.CONTAINER_IP}}:9097"
+
+
+        for ((i = 0; i < retries; i++)); do
+          if curl --fail --silent "${{ steps.containerIp.outputs.CONTAINER_IP}}:9097"; then
+          success=true
+          break 
+        fi
+
+
+        # Sleep before the next retry with exponential backoff
+
+        sleep $interval
+
+        interval=$((interval * 2))
+
+
+        # Ensure the interval doesn't exceed the maximum
+
+        if [ $interval -gt $max_interval ]; then
+          interval=$max_interval
+        fi
+
+        done
+
+
+        if [ "$success" = false ]; then
+          echo "Klaw is not reachable 😭"
+          exit 1 
+        fi
+    - name: Install dependencies
+      working-directory: ./e2e
+      run: pnpm install
+    - name: Install Playwright browsers
+      working-directory: ./e2e
+      run: pnpm playwright install --with-deps chromium
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Playwright tests (ces) (ces)
+      working-directory: ./e2e
+      run: BASE_URL=http://${{ steps.containerIp.outputs.CONTAINER_IP }}:9097 pnpm __test
+    - name: Upload Playwright artifacts
+      uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+      if: ${{ !cancelled() }}
+      with:
+        name: playwright-report
+        path: ./e2e/playwright-report/
+        retention-days: 5
+    - name: Teardown Klaw
+      if: always()
+      run: docker-scripts/klaw-docker.sh --destroy
