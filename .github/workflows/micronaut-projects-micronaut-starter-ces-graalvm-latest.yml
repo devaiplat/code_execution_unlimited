@@ -1,0 +1,52 @@
+name: micronaut-projects/micronaut-starter
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        native_test_task:
+        - test-suite-graal:nativeTest
+    env:
+      GRADLE_ENTERPRISE_ACCESS_KEY: ${{ secrets.GRADLE_ENTERPRISE_ACCESS_KEY }}
+      GRADLE_ENTERPRISE_CACHE_USERNAME: ${{ secrets.GRADLE_ENTERPRISE_CACHE_USERNAME }}
+      GRADLE_ENTERPRISE_CACHE_PASSWORD: ${{ secrets.GRADLE_ENTERPRISE_CACHE_PASSWORD }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Pre-Build Steps
+      uses: micronaut-projects/github-actions/graalvm/pre-build@master
+      id: pre-build
+      with:
+        distribution: graalvm-community
+        java: 17
+    - name: Build Steps
+      uses: micronaut-projects/github-actions/graalvm/build@master
+      id: build
+      env:
+        GH_TOKEN_PUBLIC_REPOS_READONLY: ${{ secrets.GH_TOKEN_PUBLIC_REPOS_READONLY }}
+        GH_USERNAME: ${{ secrets.GH_USERNAME }}
+        GRAALVM_QUICK_BUILD: true
+      with:
+        nativeTestTask: ${{ matrix.native_test_task }}
+    - name: Post-Build Steps
+      uses: micronaut-projects/github-actions/graalvm/post-build@master
+      id: post-build
+      with:
+        java: 17
