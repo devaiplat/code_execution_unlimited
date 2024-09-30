@@ -1,0 +1,169 @@
+name: pola-rs/polars
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  RUSTFLAGS: -C debuginfo=0
+  RUST_BACKTRACE: 1
+  PYTHONUTF8: 1
+defaults:
+  run:
+    working-directory: py-polars
+    shell: bash
+jobs:
+  test-python:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-latest
+        python-version:
+        - 3.9
+        - 3.12
+        include:
+        - os: windows-latest
+          python-version: 3.12
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Set up Graphviz
+      uses: ts-graphviz/setup-graphviz@v2
+    - name: Create virtual environment
+      env:
+        BIN: ${{ matrix.os == 'windows-latest' && 'Scripts' || 'bin' }}
+      run: |
+        python -m venv .venv
+
+        echo "$GITHUB_WORKSPACE/py-polars/.venv/$BIN" >> $GITHUB_PATH
+
+        echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/py-polars/.venv" >> $GITHUB_ENV
+    - name: Install Python dependencies
+      run: |
+        pip install uv
+
+        # Install typing-extensions separately whilst the `--extra-index-url` in `requirements-ci.txt`
+
+        # doesn't have an up-to-date typing-extensions, see
+
+        # https://github.com/astral-sh/uv/issues/6028#issuecomment-2287232150
+
+        uv pip install -U typing-extensions
+
+        uv pip install --compile-bytecode -r requirements-dev.txt -r requirements-ci.txt --verbose
+    - name: Set up Rust
+      run: rustup show
+    - name: Cache Rust
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: py-polars
+        save-if: ${{ github.ref_name == 'main' }}
+    - name: Install Polars
+      run: maturin develop
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run doctests (ces) (ces)
+      if: github.ref_name != 'main' && matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+      run: |
+        python tests/docs/run_doctest.py
+
+        pytest tests/docs/test_user_guide.py -m docs
+    - name: Run tests (ces)
+      if: github.ref_name != 'main'
+      run: pytest -n auto --dist loadgroup -m "not release and not benchmark and not docs"
+    - name: Run tests async reader tests (ces)
+      if: github.ref_name != 'main' && matrix.os != 'windows-latest'
+      env:
+        POLARS_FORCE_ASYNC: 1
+      run: pytest -m "not release and not benchmark and not docs" tests/unit/io/
+    - name: Check import without optional dependencies
+      if: github.ref_name != 'main' && matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+      run: |
+        declare -a deps=("pandas"
+
+        "pyarrow"
+
+        "fsspec"
+
+        "matplotlib"
+
+        "backports.zoneinfo"
+
+        "connectorx"
+
+        "pyiceberg"
+
+        "deltalake"
+
+        "xlsx2csv"
+
+        )
+
+        for d in "${deps[@]}"
+
+        do
+          echo "uninstall $i and check imports..."
+          pip uninstall "$d" -y
+          python -c 'import polars'
+        done
