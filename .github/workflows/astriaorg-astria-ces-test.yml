@@ -1,0 +1,450 @@
+name: astriaorg/astria
+env:
+  CI: true
+  RUSTFLAGS: -D warnings -D unreachable-pub --cfg tokio_unstable
+  RUSTUP_TOOLCHAIN: 1.81.0
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  run_checker:
+    uses: ./.github/workflows/reusable-run-checker.yml
+  protos-compiled:
+    runs-on: ubuntu-22.04
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install `buf` protobuf manager
+      uses: bufbuild/buf-setup-action@v1
+      with:
+        version: 1.32.0
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - name: Install just
+      uses: taiki-e/install-action@just
+    - name: Check if protobuf specs compile to commited Rust sources
+      run: |
+        just compile-protos
+
+        modified=$(git status --porcelain)
+
+        if [[ -n "$modified" ]]; then
+          echo "ERROR: protobuf specs are out of sync with the commited Rust sources"
+          echo "Recompile locally with \`just compile-protos\` and commit to the repository."
+          echo "Files that reported differences:"
+          echo "$modified"
+          exit 1
+        fi
+  solidity-contracts-compiled:
+    runs-on: ubuntu-22.04
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - name: Install just
+      uses: taiki-e/install-action@just
+    - name: Check if protobuf specs compile to commited Rust sources
+      run: |
+        just compile-solidity-contracts
+
+        modified=$(git status --porcelain)
+
+        if [[ -n "$modified" ]]; then
+          echo "ERROR: solidity contracts are out of sync with the commited Rust sources"
+          echo "Recompile locally with \`just compile-solidity-contracts\` and commit to the repository."
+          echo "Files that reported differences:"
+          echo "$modified"
+          exit 1
+        fi
+  compiles:
+    runs-on: buildjet-4vcpu-ubuntu-2204
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: taiki-e/install-action@v2.15.2
+      with:
+        tool: cargo-hack@0.5.29
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - uses: arduino/setup-protoc@v3
+      with:
+        version: 24.4
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Check that each crate compiles individually (circumventing workspace wide dependency resolution)
+      run: |
+        : # exclude all lints because cargo-hack ignores default-members and operates on all workspace members
+
+        cargo hack check --workspace --all-targets --all-features \
+
+        --exclude tracing_debug_field
+  lockfile:
+    runs-on: ubuntu-22.04
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: github
+    - name: Check that the lockfile is updated
+      run: cargo fetch --locked
+  audit:
+    runs-on: ubuntu-22.04
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: rustsec/audit-check@v1.4.1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+  rust:
+    runs-on: buildjet-8vcpu-ubuntu-2204
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install nextest (ces) (ces)
+      uses: taiki-e/install-action@nextest
+    - uses: arduino/setup-protoc@v3
+      with:
+        version: 24.4
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Build tests (ces)
+      run: |
+        cargo nextest archive --archive-file=archive.tar.zst --release \
+
+        --all-features \
+
+        --all-targets
+    - name: Run tests (ces)
+      timeout-minutes: 20
+      run: |
+        cargo nextest run --archive-file=archive.tar.zst
+  rust-ethereum:
+    runs-on: buildjet-8vcpu-ubuntu-2204
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install nextest (ces) (ces)
+      uses: taiki-e/install-action@nextest
+    - uses: arduino/setup-protoc@v3
+      with:
+        version: 24.4
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Install Foundry
+      uses: foundry-rs/foundry-toolchain@v1
+    - name: Run tests (ces)
+      timeout-minutes: 20
+      run: |
+        cargo nextest run --package astria-bridge-withdrawer -- --include-ignored
+  doctest:
+    runs-on: buildjet-8vcpu-ubuntu-2204
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - uses: arduino/setup-protoc@v3
+      with:
+        version: 24.4
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: run doctests (ces) (ces)
+      run: cargo test --doc --all-features
+  clippy:
+    runs-on: buildjet-8vcpu-ubuntu-2204
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+        components: clippy
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - uses: arduino/setup-protoc@v3
+      with:
+        version: 24.4
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: run pedantic clippy on workspace crates
+      run: |
+        cargo clippy --all-targets --all-features \
+
+        -- --warn clippy::pedantic --warn clippy::arithmetic-side-effects --deny warnings
+    - name: run pedantic clippy on tools/protobuf-compiler
+      run: |
+        cargo clippy --manifest-path tools/protobuf-compiler/Cargo.toml \
+
+        --all-targets --all-features \
+
+        -- --warn clippy::pedantic --deny warnings
+  custom-lints:
+    runs-on: buildjet-8vcpu-ubuntu-2204
+    needs: run_checker
+    if: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2024-09-05
+        components: clippy, llvm-tools-preview, rustc-dev, rust-src
+    - uses: Swatinem/rust-cache@v2.7.3
+      with:
+        cache-provider: buildjet
+    - name: install cargo-dylint and dylint-link
+      run: cargo install cargo-dylint@3.2.0 dylint-link@3.2.0 --locked
+    - uses: arduino/setup-protoc@v3
+      with:
+        version: 24.4
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: run clippy against custom lints
+      run: |
+        : # list all lint packages here to have clippy explicitly test them
+
+        : # uses the same nightly installed above to work around the entry in rust-toolchain.toml 
+
+        cargo +nightly-2024-09-05 clippy --all-targets --all-features \
+
+        -p tracing_debug_field \
+
+        -- --warn clippy::pedantic --deny warnings
+    - name: run dylint clippy on workspace crates
+      env:
+        DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint_drivers/
+        DYLINT_RUSTFLAGS: -D warnings
+      run: |
+        mkdir -p "$DYLINT_DRIVER_PATH"
+
+        cargo dylint --all --workspace
+  test:
+    if: true
+    needs:
+    - compiles
+    - protos-compiled
+    - solidity-contracts-compiled
+    - rust
+    - doctest
+    - clippy
+    - lockfile
+    - custom-lints
+    uses: ./.github/workflows/reusable-success.yml
+    with:
+      success: ${{ !contains(needs.*.result, 'failure') }}
