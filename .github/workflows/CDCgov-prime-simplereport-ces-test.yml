@@ -1,0 +1,370 @@
+name: CDCgov/prime-simplereport
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-test
+  cancel-in-progress: true
+env:
+  NODE_VERSION: 22
+  JAVA_VERSION: 17
+  JAVA_DISTRIBUTION: zulu
+  PROJECT_ROOT: /home/runner/work/prime-simplereport/prime-simplereport
+defaults:
+  run:
+    working-directory: backend
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+    - name: Cache Java Dependencies
+      uses: actions/cache@v4
+      with:
+        path: >
+          ~/.gradle/caches
+
+          ~/.gradle/wrapper
+        key: gradle-${{ hashFiles('*.gradle', 'gradle/dependency-locks/*') }}
+    - name: Start DB
+      env:
+        DOCKER_DATABASE_IMAGE_VERSION: ${{ inputs.DOCKER_DATABASE_IMAGE_VERSION }}
+      run: touch ../.env && docker compose -f ../docker-compose.yml up -d db
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      env:
+        OKTA_TESTING_DISABLEHTTPS: true
+        TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+        TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      run: ./gradlew jacocoTestReport -PtestDbPort=5432
+    - name: Cache backend coverage results
+      uses: actions/cache@v4
+      with:
+        path: backend/build/**
+        key: ${{ runner.os }}-backend-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Archive failed test results (ces)
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: backend-test-report
+        path: backend/build/reports/tests/test
+        retention-days: 7
+  frontend-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Use Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    - name: Cache yarn
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/yarn
+        key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+    - name: Node setup
+      working-directory: ./frontend
+      run: yarn install --prefer-offline
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      working-directory: ./frontend
+      run: yarn test:ci
+    - name: Cache frontend coverage results
+      uses: actions/cache@v4
+      with:
+        path: >
+          frontend/coverage/**
+        key: ${{ runner.os }}-frontend-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+  function-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Use Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: 'Function Apps: yarn install'
+      working-directory: ./ops/services/app_functions/report_stream_batched_publisher/functions
+      run: yarn
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: 'Function Apps: Test (ces) (ces)'
+      working-directory: ./ops/services/app_functions/report_stream_batched_publisher/functions
+      run: yarn coverage
+    - name: Cache function coverage results
+      uses: actions/cache@v4
+      with:
+        path: >
+          ops/services/app_functions/report_stream_batched_publisher/functions/coverage/**
+        key: ${{ runner.os }}-function-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Archive function coverage results
+      uses: actions/upload-artifact@v4
+      with:
+        name: function-coverage
+        path: ops/services/app_functions/report_stream_batched_publisher/functions/coverage
+  sonar:
+    needs:
+    - backend-tests
+    - frontend-tests
+    - function-tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      if: ${{ github.actor != 'dependabot[bot]' }}
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Restore backend cache
+      if: ${{ github.actor != 'dependabot[bot]' }}
+      uses: actions/cache@v4
+      with:
+        path: >
+          backend/build/**
+        key: ${{ runner.os }}-backend-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Restore frontend cache
+      if: ${{ github.actor != 'dependabot[bot]' }}
+      uses: actions/cache@v4
+      with:
+        path: >
+          frontend/coverage/**
+        key: ${{ runner.os }}-frontend-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Restore functions cache
+      if: ${{ github.actor != 'dependabot[bot]' }}
+      uses: actions/cache@v4
+      with:
+        path: >
+          ops/services/app_functions/report_stream_batched_publisher/functions/coverage/**
+        key: ${{ runner.os }}-function-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Set up JDK
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+    - name: Sonar analysis
+      if: ${{ github.actor != 'dependabot[bot]' }}
+      run: ./gradlew sonar -Dsonar.projectBaseDir=${{ env.PROJECT_ROOT }} --info
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  build-jar:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+    - name: Cache Java dependencies
+      uses: actions/cache@v4
+      with:
+        path: >
+          ~/.gradle/caches
+
+          ~/.gradle/wrapper
+        key: gradle-${{ hashFiles('*.gradle', 'gradle/dependency-locks/*') }}
+    - name: Run Java build
+      run: ./gradlew assemble
+  backend-lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up JDK ${{ env.JAVA_VERSION }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.JAVA_VERSION }}
+        distribution: ${{ env.JAVA_DISTRIBUTION }}
+    - name: Cache Java dependencies
+      uses: actions/cache@v4
+      with:
+        path: >
+          ~/.gradle/caches
+
+          ~/.gradle/wrapper
+        key: gradle-${{ hashFiles('*.gradle', 'gradle/dependency-locks/*') }}
+    - name: Run style checks
+      run: ./gradlew checkstyleMain checkstyleTest spotlessCheck --continue
+  frontend-lint-and-build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Use Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+    - name: Cache yarn
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/yarn
+        key: ${{ runner.os }}-yarn-${{ hashFiles('**/yarn.lock') }}
+        restore-keys: >
+          ${{ runner.os }}-yarn-
+    - name: Node setup
+      working-directory: ./frontend
+      run: yarn
+    - name: Lint front-end
+      working-directory: ./frontend
+      run: yarn lint
+    - name: Build release
+      working-directory: ./frontend
+      run: yarn build
