@@ -1,0 +1,181 @@
+name: OpenC3/cosmos
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  RUBYGEMS_URL: https://rubygems.org
+  BUNDLE_WITHOUT: development
+  OPENC3_REDIS_USERNAME: openc3
+  OPENC3_REDIS_PASSWORD: openc3password
+  OPENC3_REDIS_HOSTNAME: 127.0.0.1
+  OPENC3_REDIS_PORT: 6379
+  OPENC3_REDIS_EPHEMERAL_HOSTNAME: 127.0.0.1
+  OPENC3_REDIS_EPHEMERAL_PORT: 6380
+  OPENC3_SERVICE_PASSWORD: openc3service
+jobs:
+  cmd-tlm-api:
+    if: true
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ruby-version:
+        - 3.1
+        - 3.2
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Ruby ${{ matrix.ruby-version }}
+      uses: ruby/setup-ruby@v1
+      env:
+        OPENC3_DEVEL: ../openc3
+      with:
+        ruby-version: ${{ matrix.ruby-version }}
+        bundler-cache: true
+        working-directory: openc3-cosmos-cmd-tlm-api
+    - name: Build OpenC3
+      run: bundle install; bundle exec rake build
+      working-directory: openc3
+      env:
+        OPENC3_DEVEL: ${GITHUB_WORKSPACE}/openc3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run cmd-tlm-api tests (ces) (ces)
+      run: bundle exec rspec
+      working-directory: openc3-cosmos-cmd-tlm-api
+      env:
+        OPENC3_DEVEL: ../openc3
+    - uses: codecov/codecov-action@v4
+      with:
+        directory: openc3-cosmos-cmd-tlm-api/coverage
+        flags: ruby-api
+        token: ${{ secrets.CODECOV_TOKEN }}
+  script-runner-api:
+    if: true
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ruby-version:
+        - 3.1
+        - 3.2
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Ruby ${{ matrix.ruby-version }}
+      uses: ruby/setup-ruby@v1
+      env:
+        OPENC3_DEVEL: ../openc3
+      with:
+        ruby-version: ${{ matrix.ruby-version }}
+        bundler-cache: true
+        working-directory: openc3-cosmos-script-runner-api
+    - name: Build OpenC3
+      run: bundle install; bundle exec rake build
+      working-directory: openc3
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run script-runner-api tests (ces) (ces)
+      run: bundle exec rspec
+      working-directory: openc3-cosmos-script-runner-api
+      env:
+        OPENC3_DEVEL: ../openc3
+    - uses: codecov/codecov-action@v4
+      with:
+        directory: openc3-cosmos-script-runner-api/coverage
+        flags: ruby-api
+        token: ${{ secrets.CODECOV_TOKEN }}
