@@ -1,0 +1,183 @@
+name: ESMValGroup/ESMValCore
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+defaults:
+  run:
+    shell: bash -l {0}
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version:
+        - 3.10
+        - 3.11
+        - 3.12
+      fail-fast: false
+    name: Linux Python ${{ matrix.python-version }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        activate-environment: esmvalcore
+        environment-file: environment.yml
+        python-version: ${{ matrix.python-version }}
+        miniforge-version: latest
+        miniforge-variant: Mambaforge
+        use-mamba: true
+    - run: mkdir -p test_linux_artifacts_python_${{ matrix.python-version }}
+    - run: conda --version 2>&1 | tee test_linux_artifacts_python_${{ matrix.python-version }}/conda_version.txt
+    - run: python -V 2>&1 | tee test_linux_artifacts_python_${{ matrix.python-version }}/python_version.txt
+    - run: pip install pytest-monitor
+    - run: pip install -e .[develop] 2>&1 | tee test_linux_artifacts_python_${{ matrix.python-version }}/install.txt
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - run: pytest -n 2 -m "not installation" --db ../.pymon 2>&1 | tee test_linux_artifacts_python_${{ matrix.python-version }}/test_report.txt
+    - run: python tests/parse_pymon.py
+    - name: Upload artifacts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: Test_Linux_python_${{ matrix.python-version }}
+        path: test_linux_artifacts_python_${{ matrix.python-version }}
+  osx:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version:
+        - 3.10
+        - 3.11
+        - 3.12
+        architecture:
+        - x64
+      fail-fast: false
+    name: OSX Python ${{ matrix.python-version }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: conda-incubator/setup-miniconda@v3
+      with:
+        architecture: ${{ matrix.architecture }}
+        activate-environment: esmvalcore
+        environment-file: environment.yml
+        python-version: ${{ matrix.python-version }}
+        miniforge-version: latest
+        miniforge-variant: Mambaforge
+        use-mamba: true
+    - run: mkdir -p test_osx_artifacts_python_${{ matrix.python-version }}
+    - run: conda --version 2>&1 | tee test_osx_artifacts_python_${{ matrix.python-version }}/conda_version.txt
+    - run: python -V 2>&1 | tee test_osx_artifacts_python_${{ matrix.python-version }}/python_version.txt
+    - run: mamba install -c conda-forge git
+    - run: pip install pytest-monitor
+    - run: pip install -e .[develop] 2>&1 | tee test_osx_artifacts_python_${{ matrix.python-version }}/install.txt
+    - run: conda list
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - run: pytest -n 2 -m "not installation" --db ../.pymon 2>&1 | tee test_osx_artifacts_python_${{ matrix.python-version }}/test_report.txt
+    - run: python tests/parse_pymon.py
+    - name: Upload artifacts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: Test_OSX_python_${{ matrix.python-version }}
+        path: test_osx_artifacts_python_${{ matrix.python-version }}
