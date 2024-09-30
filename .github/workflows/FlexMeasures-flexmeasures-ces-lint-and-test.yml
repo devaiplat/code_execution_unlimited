@@ -1,0 +1,139 @@
+name: FlexMeasures/flexmeasures
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    name: Check (on Python 3.9)
+    steps:
+    - uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: pre-commit/action@v3.0.0
+  test:
+    needs: check
+    runs-on: ubuntu-20.04
+    strategy:
+      fail-fast: false
+      matrix:
+        py_version:
+        - 3.8
+        - 3.9
+        - 3.10
+        - 3.11
+        include:
+        - python-version: 3.9
+          coverage: yes
+    name: Test (on Python ${{ matrix.py_version }})
+    steps:
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.py_version }}
+    - name: Check out src from Git
+      uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Get history and tags for SCM versioning to work
+      run: |
+        git fetch --prune --unshallow
+
+        git fetch --depth=1 origin +refs/tags/*:refs/tags/*
+    - name: Caching for dependencies (.txt) - restore existing or ensure new cache will be made
+      uses: actions/cache@v2
+      id: cache
+      with:
+        path: ${{ env.pythonLocation }}
+        key: ${{ runner.os }}-pip-${{ env.pythonLocation }}-${{ SECRETS.CACHE_DATE }}-${{ hashFiles('**/requirements/**/*.txt') }}
+        restore-keys: >
+          ${{ runner.os }}-pip-
+    - run: |
+        ci/setup-postgres.sh
+
+        sudo apt-get -y install coinor-cbc
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install FlexMeasures & exact dependencies for tests (ces) (ces)
+      run: make install-for-test
+      if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+    - name: Install FlexMeasures & latest dependencies for tests (ces)
+      run: make install-for-test pinned=no
+      if: github.event_name == 'pull_request'
+    - name: Run all tests except those marked to be skipped by GitHub AND record coverage (ces)
+      run: pytest -v -m "not skip_github" --cov=flexmeasures --cov-branch --cov-report=lcov
+    - name: Coveralls
+      uses: coverallsapp/github-action@v2
+      if: ${{ matrix.coverage == 'yes' }}
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: flexmeasures_test
+      PGDB: flexmeasures_test
+      PGPASSWORD: flexmeasures_test
+    services:
+      postgres:
+        image: postgres:12.5
+        env:
+          POSTGRES_USER: flexmeasures_test
+          POSTGRES_PASSWORD: flexmeasures_test
+          POSTGRES_DB: flexmeasures_test
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
