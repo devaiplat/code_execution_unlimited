@@ -1,0 +1,25 @@
+name: wazuh/wazuh-dashboard-plugins
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test:
+    name: Run unit tests
+    uses: ./.github/workflows/dev-environment.yml
+    with:
+      reference: ${{ github.event.inputs.reference }}
+      command: ${{ github.event.inputs.command || 'yarn test:jest' }}
+      notify_jest_coverage_summary: true
+    secrets: inherit
