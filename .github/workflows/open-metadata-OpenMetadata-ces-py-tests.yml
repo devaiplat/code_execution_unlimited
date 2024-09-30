@@ -1,0 +1,166 @@
+name: open-metadata/OpenMetadata
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  py-run-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        py-version:
+        - 3.8
+        - 3.9
+        - 3.10
+        - 3.11
+    steps:
+    - name: Free Disk Space (Ubuntu)
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        swap-storage: true
+        docker-images: false
+    - name: Wait for the labeler
+      uses: lewagon/wait-on-check-action@v1.3.3
+      if: ${{ github.event_name == 'pull_request_target' }}
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        check-name: Team Label
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        wait-interval: 90
+    - name: Verify PR labels
+      uses: jesusvasquez333/verify-pr-label-action@v1.4.0
+      if: ${{ github.event_name == 'pull_request_target' }}
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        valid-labels: safe to test
+        pull-request-number: ${{ github.event.pull_request.number }}
+        disable-reviews: true
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Setup Openmetadata Test Environment (ces) (ces)
+      uses: ./.github/actions/setup-openmetadata-test-environment
+      with:
+        python-version: ${{ matrix.py-version}}
+        args: -m no-ui
+        ingestion_dependency: mysql,elasticsearch,sample-data
+    - name: Run Python Tests (ces)
+      if: ${{ matrix.py-version != '3.9' }}
+      run: |
+        source env/bin/activate
+
+        make run_python_tests
+      env:
+        TESTCONTAINERS_RYUK_DISABLED: true
+    - name: Run Python Tests & record coverage (ces)
+      if: ${{ matrix.py-version == '3.9' }}
+      run: |
+        source env/bin/activate
+
+        make coverage
+
+        rm pom.xml
+
+        # fix coverage xml report for github
+
+        sed -i 's/src\/metadata/\/github\/workspace\/ingestion\/src\/metadata/g' ingestion/ci-coverage.xml
+    - name: Clean Up
+      run: |
+        cd ./docker/development
+
+        docker compose down --remove-orphans
+
+        sudo rm -rf ${PWD}/docker-volume
+    - name: Push Results in PR to Sonar
+      id: push-to-sonar
+      if: ${{ github.event_name == 'pull_request_target' && matrix.py-version == '3.9' }}
+      continue-on-error: true
+      uses: sonarsource/sonarcloud-github-action@v2.3.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.INGESTION_SONAR_SECRET }}
+      with:
+        projectBaseDir: ingestion/
+        args: >
+          -Dproject.settings=ingestion/sonar-project.properties -Dsonar.pullrequest.key=${{ github.event.pull_request.number }} -Dsonar.pullrequest.branch=${{ github.head_ref }} -Dsonar.pullrequest.github.repository=OpenMetadata -Dsonar.scm.revision=${{ github.event.pull_request.head.sha }} -Dsonar.pullrequest.provider=github
+    - name: Wait to retry 'Push Results in PR to Sonar'
+      if: ${{ github.event_name == 'pull_request_target' && matrix.py-version == '3.9' && steps.push-to-sonar.outcome != 'success' }}
+      run: sleep 20s
+      shell: bash
+    - name: Retry 'Push Results in PR to Sonar'
+      uses: sonarsource/sonarcloud-github-action@master
+      if: ${{ github.event_name == 'pull_request_target' && matrix.py-version == '3.9' && steps.push-to-sonar.outcome != 'success' }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.INGESTION_SONAR_SECRET }}
+      with:
+        projectBaseDir: ingestion/
+        args: >
+          -Dproject.settings=ingestion/sonar-project.properties -Dsonar.pullrequest.key=${{ github.event.pull_request.number }} -Dsonar.pullrequest.branch=${{ github.head_ref }} -Dsonar.pullrequest.github.repository=OpenMetadata -Dsonar.scm.revision=${{ github.event.pull_request.head.sha }} -Dsonar.pullrequest.provider=github
