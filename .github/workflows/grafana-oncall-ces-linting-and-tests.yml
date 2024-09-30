@@ -1,0 +1,525 @@
+name: grafana/oncall
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  DJANGO_SETTINGS_MODULE: settings.ci_test
+  SKIP_SLACK_SDK_WARNING: True
+  DATABASE_HOST: localhost
+  RABBITMQ_URI: amqp://rabbitmq:rabbitmq@localhost:5672
+  SLACK_CLIENT_OAUTH_ID: 1
+jobs:
+  lint-entire-project:
+    name: Lint entire project
+    runs-on: ubuntu-latest-16-cores
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: ./.github/actions/setup-python
+      with:
+        install-dependencies: false
+    - name: Install frontend dependencies
+      uses: ./.github/actions/install-frontend-dependencies
+    - uses: pre-commit/action@v3.0.1
+  lint-test-and-build-frontend:
+    name: Lint, test, and build frontend
+    runs-on: ubuntu-latest-16-cores
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install frontend dependencies
+      uses: ./.github/actions/install-frontend-dependencies
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build, lint and test frontend (ces) (ces)
+      working-directory: grafana-plugin
+      run: pnpm lint && pnpm type-check && pnpm test && pnpm build
+  test-technical-documentation:
+    name: Test technical documentation
+    runs-on: ubuntu-latest-16-cores
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Build website
+      run: |
+        docker run -v ${PWD}/docs/sources:/hugo/content/docs/oncall/latest -e HUGO_REFLINKSERRORLEVEL=ERROR --rm grafana/docs-base:latest /bin/bash -c 'echo -e "---\\nredirectURL: /hugo/content/docs/oncall/latest/\\ntype: redirect\\nversioned: true\\n---\\n" > /hugo/content/docs/oncall/_index.md; make hugo'
+  lint-migrations-backend-mysql-rabbitmq:
+    name: Lint database migrations
+    runs-on: ubuntu-latest-16-cores
+    services:
+      rabbit_test:
+        image: rabbitmq:3.12.0
+        env:
+          RABBITMQ_DEFAULT_USER: rabbitmq
+          RABBITMQ_DEFAULT_PASS: rabbitmq
+        ports:
+        - 5672:5672
+      mysql_test:
+        image: mysql:8.0.32
+        env:
+          MYSQL_DATABASE: oncall_local_dev
+          MYSQL_ROOT_PASSWORD: local_dev_pwd
+        ports:
+        - 3306:3306
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: ./.github/actions/setup-python
+    - name: Lint migrations
+      working-directory: engine
+      run: |
+        python manage.py makemigrations --check
+
+        python manage.py lintmigrations
+  unit-test-helm-chart:
+    name: Helm Chart Unit Tests
+    runs-on: ubuntu-latest-16-cores
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: azure/setup-helm@v4.2.0
+      with:
+        version: v3.8.0
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install helm unittest plugin (ces) (ces)
+      run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version=v0.3.3
+    - name: Run tests (ces)
+      run: helm unittest ./helm/oncall
+  unit-test-backend-plugin:
+    name: 'Backend Tests: Plugin'
+    runs-on: ubuntu-latest-16-cores
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-go@v4
+      with:
+        go-version: 1.21.5
+    - run: cd grafana-plugin && go test ./pkg/...
+  unit-test-backend-mysql-rabbitmq:
+    name: 'Backend Tests: MySQL + RabbitMQ (RBAC enabled: ${{ matrix.rbac_enabled }})'
+    runs-on: ubuntu-latest-16-cores
+    strategy:
+      matrix:
+        rbac_enabled:
+        - True
+        - False
+    env:
+      ONCALL_TESTING_RBAC_ENABLED: ${{ matrix.rbac_enabled }}
+    services:
+      rabbit_test:
+        image: rabbitmq:3.12.0
+        env:
+          RABBITMQ_DEFAULT_USER: rabbitmq
+          RABBITMQ_DEFAULT_PASS: rabbitmq
+        ports:
+        - 5672:5672
+      mysql_test:
+        image: mysql:8.0.32
+        env:
+          MYSQL_DATABASE: oncall_local_dev
+          MYSQL_ROOT_PASSWORD: local_dev_pwd
+        ports:
+        - 3306:3306
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: ./.github/actions/setup-python
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Unit Test Backend (ces) (ces)
+      working-directory: engine
+      run: ./wait_for_test_mysql_start.sh && pytest -x
+  unit-test-backend-postgresql-rabbitmq:
+    name: 'Backend Tests: PostgreSQL + RabbitMQ (RBAC enabled: ${{ matrix.rbac_enabled }})'
+    runs-on: ubuntu-latest-16-cores
+    strategy:
+      matrix:
+        rbac_enabled:
+        - True
+        - False
+    env:
+      DATABASE_TYPE: postgresql
+      ONCALL_TESTING_RBAC_ENABLED: ${{ matrix.rbac_enabled }}
+    services:
+      rabbit_test:
+        image: rabbitmq:3.12.0
+        env:
+          RABBITMQ_DEFAULT_USER: rabbitmq
+          RABBITMQ_DEFAULT_PASS: rabbitmq
+        ports:
+        - 5672:5672
+      postgresql_test:
+        image: postgres:14.4
+        env:
+          POSTGRES_DB: oncall_local_dev
+          POSTGRES_PASSWORD: local_dev_pwd
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: ./.github/actions/setup-python
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Unit Test Backend (ces) (ces)
+      working-directory: engine
+      run: pytest -x
+  unit-test-backend-sqlite-redis:
+    name: 'Backend Tests: SQLite + Redis (RBAC enabled: ${{ matrix.rbac_enabled }})'
+    runs-on: ubuntu-latest-16-cores
+    strategy:
+      matrix:
+        rbac_enabled:
+        - True
+        - False
+    env:
+      DATABASE_TYPE: sqlite3
+      BROKER_TYPE: redis
+      REDIS_URI: redis://localhost:6379
+      ONCALL_TESTING_RBAC_ENABLED: ${{ matrix.rbac_enabled }}
+    services:
+      redis_test:
+        image: redis:7.0.5
+        ports:
+        - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: ./.github/actions/setup-python
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Unit Test Backend (ces) (ces)
+      working-directory: engine
+      run: pytest -x
+  unit-test-migrators:
+    name: Unit tests - Migrators
+    runs-on: ubuntu-latest-16-cores
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: ./.github/actions/setup-python
+      with:
+        python-requirements-paths: tools/migrators/requirements.txt
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Unit Test Migrators (ces) (ces)
+      working-directory: tools/migrators
+      run: pytest -x
+  mypy:
+    name: mypy
+    runs-on: ubuntu-latest-16-cores
+    steps:
+    - name: Checkout project
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Setup Python
+      uses: ./.github/actions/setup-python
+    - name: mypy Static Type Checking
+      working-directory: engine
+      run: mypy .
+  end-to-end-tests:
+    name: Standard e2e tests
+    uses: ./.github/workflows/e2e-tests.yml
+    strategy:
+      matrix:
+        grafana_version:
+        - 10.3.0
+        - 11.2.0
+        - latest
+      fail-fast: false
+    with:
+      grafana_version: ${{ matrix.grafana_version }}
+      run-expensive-tests: false
+      browsers: chromium
