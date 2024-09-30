@@ -1,0 +1,94 @@
+name: minvws/nl-kat-coordination
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  Tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+        - 3.10
+        - 3.11
+    runs-on: ubuntu-20.04
+    env:
+      COMPOSE_FILE: .ci/docker-compose.yml
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.version }}
+        cache: pip
+    - name: Install pip
+      run: python3 -m pip install --upgrade pip
+    - name: Install dev requirements
+      run: grep -v git+https:// requirements-dev.txt | pip install -r /dev/stdin && grep git+https:// requirements-dev.txt | pip install -r /dev/stdin
+      working-directory: ./boefjes
+    - name: Install requirements
+      run: find . -name requirements.txt | xargs -L 1 pip install -r
+      working-directory: ./boefjes
+    - name: Install Octopoes
+      run: pip install wheel && cd octopoes && python setup.py bdist_wheel && pip install dist/octopoes*.whl
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run pytests (ces) (ces)
+      run: python3 -m pytest
+      working-directory: ./boefjes
+    - name: Run integration tests (ces)
+      run: make itest build_args='--build-arg PYTHON_VERSION=${{ matrix.version }}'
+      working-directory: ./boefjes
