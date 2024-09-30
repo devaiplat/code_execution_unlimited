@@ -1,0 +1,121 @@
+name: geeksforsocialchange/PlaceCal
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13.4
+        env:
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: placecal_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: foobar
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      PGPASSWORD: foobar
+    steps:
+    - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ruby/setup-ruby@v1
+      with:
+        bundler-cache: true
+        cache-version: 3
+    - uses: nodenv/actions/setup-nodenv@v2
+    - uses: nodenv/actions/node-version@v2
+      id: nodenv
+    - uses: actions/setup-node@1a4442cacd436585916779262731d5b162bc6ec7
+      with:
+        node-version: ${{ steps.nodenv.outputs.node-version }}
+        cache: yarn
+    - run: yarn install --immutable
+    - run: bin/test --unit --no-lint
+    - run: bin/test --system --no-lint
+    - run: bin/test --lint --no-fix
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - if: failure()
+      name: Upload test screenshots (ces) (ces)
+      uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+      with:
+        name: test-screenshots
+        path: tmp/screenshots/
+        if-no-files-found: ignore
+    - if: github.ref == 'refs/heads/main'
+      name: Deploy to placecal-staging.org
+      uses: dokku/github-action@0c02c44f990eac0ed2b3ee90a9b3ca0a38d15349
+      with:
+        branch: main
+        ci_branch_name: main
+        git_remote_url: ssh://dokku@placecal-staging.org:666/placecal
+        ssh_private_key: ${{ secrets.CI_STAGING_KEY }}
+    - if: github.ref == 'refs/heads/production'
+      name: Deploy to placecal.org
+      uses: dokku/github-action@0c02c44f990eac0ed2b3ee90a9b3ca0a38d15349
+      with:
+        branch: main
+        ci_branch_name: production
+        git_remote_url: ssh://dokku@placecal.org:666/placecal
+        ssh_private_key: ${{ secrets.CI_PRODUCTION_KEY }}
