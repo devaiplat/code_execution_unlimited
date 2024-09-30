@@ -1,0 +1,266 @@
+name: osmosis-labs/osmosis
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+jobs:
+  get_diff:
+    runs-on: buildjet-4vcpu-ubuntu-2204
+    steps:
+    - name: Check out repository code
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Get git diff
+      uses: technote-space/get-diff-action@v6.1.2
+      with:
+        PATTERNS: >
+          **/**.wasm
+
+          **/**.go
+
+          **/**.mod
+
+          **/**.sum
+
+          Makefile
+
+          Dockerfile
+
+          .github/workflows/test.yml
+    - name: Set output
+      id: vars
+      run: echo "git_diff=$GIT_DIFF" >> $GITHUB_OUTPUT
+    outputs:
+      git_diff: ${{ steps.vars.outputs.git_diff }}
+  go-split-test-files:
+    needs: get_diff
+    if: true
+    runs-on: buildjet-4vcpu-ubuntu-2204
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: "\U0001F43F Setup Golang"
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Create a file with all core Cosmos SDK pkgs
+      run: |
+        go list \
+          ./... \
+          ./osmomath/... \
+          ./osmoutils/... \
+          ./x/ibc-hooks/...\
+          ./x/epochs \
+          | grep -E -v 'tests/simulator|e2e' \
+          > pkgs.txt
+    - name: Split pkgs into 4 files
+      run: |
+        split -d -n l/4 pkgs.txt pkgs.txt.part.
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.sha }}-00
+        path: ./pkgs.txt.part.00
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.sha }}-01
+        path: ./pkgs.txt.part.01
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.sha }}-02
+        path: ./pkgs.txt.part.02
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.sha }}-03
+        path: ./pkgs.txt.part.03
+  go:
+    needs:
+    - go-split-test-files
+    - get_diff
+    if: true
+    runs-on: buildjet-4vcpu-ubuntu-2204
+    strategy:
+      fail-fast: false
+      matrix:
+        part:
+        - 00
+        - 01
+        - 02
+        - 03
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: "\U0001F43F Setup Golang"
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Display go version
+      run: go version
+    - uses: actions/download-artifact@v4
+      with:
+        name: ${{ github.sha }}-${{ matrix.part }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test & coverage report creation (ces) (ces)
+      run: |
+        VERSION=$(echo $(git describe --tags) | sed 's/^v//') || VERSION=${GITHUB_SHA}
+
+        TESTS=$(cat pkgs.txt.part.${{ matrix.part }})
+
+        VERSION=$VERSION SKIP_WASM_WSL_TESTS="false" go test -race -mod=readonly -tags='ledger test_ledger_mock norace' $TESTS
+  e2e:
+    needs: get_diff
+    if: true
+    runs-on: buildjet-4vcpu-ubuntu-2204
+    timeout-minutes: 20
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Login to DockerHub
+      uses: docker/login-action@v3
+      if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'mergify[bot]' }}
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: "\U0001F43F Setup Golang"
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Build e2e image
+      uses: docker/build-push-action@v6
+      with:
+        load: true
+        context: .
+        tags: osmosis:debug
+        build-args: >
+          BASE_IMG_TAG=debug
+
+          BUILD_TAGS="netgo,muslc"
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test e2e and Upgrade (ces) (ces)
+      run: make test-e2e-ci
+    - name: Dump docker logs on failure
+      if: failure()
+      uses: jwalton/gh-docker-logs@v2
+      with:
+        dest: ./logs
+    - name: Tar logs
+      if: failure()
+      run: |
+        tar cvzf ./logs.tgz ./logs
+    - name: Upload logs to GitHub
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs.tgz
+        path: ./logs.tgz
