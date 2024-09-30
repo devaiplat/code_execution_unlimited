@@ -1,0 +1,112 @@
+name: input-output-hk/mithril
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  stress-test:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout sources
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Prepare environment variables
+      id: prepare
+      shell: bash
+      run: |
+        if [[ "${{ inputs.enable_debug }}" == "true" ]]; then
+          echo "debug_level=-vvv" >> $GITHUB_OUTPUT
+        fi
+    - name: Install stable toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: stable
+    - name: Download built artifacts (Linux-x64)
+      uses: dawidd6/action-download-artifact@v3
+      with:
+        name: mithril-distribution-Linux-X64
+        path: ./bin
+        commit: ${{ inputs.commit_sha }}
+        workflow: ci.yml
+        workflow_conclusion: success
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Download test runners (ces) (ces)
+      uses: dawidd6/action-download-artifact@v3
+      with:
+        name: mithril-tooling-Linux-X64
+        path: ./bin
+        commit: ${{ inputs.commit_sha }}
+        workflow: ci.yml
+        workflow_conclusion: success
+    - name: Set permissions
+      shell: bash
+      working-directory: ./bin
+      run: |
+        chmod +x ./mithril-aggregator
+
+        chmod +x ./load-aggregator
+    - name: Run the aggregator stress test (ces)
+      run: |
+        ./bin/load-aggregator ${{ steps.prepare.outputs.debug_level }} \
+
+        --cardano-cli-path ./mithril-test-lab/mithril-end-to-end/script/mock-cardano-cli \
+
+        --aggregator-dir ./bin \
+
+        --num-signers=${{ inputs.num_signers }} \
+
+        --num-clients=${{ inputs.num_clients }}
