@@ -1,0 +1,151 @@
+name: MobilityData/mobility-feed-api
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  python_version: 3.11
+  java_version: 11
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    permissions: write-all
+    name: Build & Test
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Extract commit hash and version from git
+      run: ./scripts/extract-hash-and-version.sh
+    - name: Set up JDK ${{ env.java_version }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ env.java_version }}
+        distribution: temurin
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.python_version }}
+    - name: Docker Compose DB
+      run: |
+        docker compose --env-file ./config/.env.local up -d postgres postgres-test
+      working-directory: ${{ github.workspace }}
+    - name: Run lint checks
+      shell: bash
+      run: |
+        scripts/lint-tests.sh
+    - name: Install Liquibase
+      run: |
+        wget -O- https://repo.liquibase.com/liquibase.asc | gpg --dearmor > liquibase-keyring.gpg && \
+
+        cat liquibase-keyring.gpg | sudo tee /usr/share/keyrings/liquibase-keyring.gpg > /dev/null && \
+
+        echo 'deb [trusted=yes arch=amd64 signed-by=/usr/share/keyrings/liquibase-keyring.gpg] https://repo.liquibase.com stable main' | sudo tee /etc/apt/sources.list.d/liquibase.list
+
+
+        sudo apt-get update
+
+        sudo apt-get install liquibase=4.25.1
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run Liquibase on Python functions test DB (ces) (ces)
+      run: |
+        export LIQUIBASE_CLASSPATH="liquibase"
+
+        export LIQUIBASE_COMMAND_CHANGELOG_FILE="changelog.xml"
+
+        export LIQUIBASE_COMMAND_URL=jdbc:postgresql://localhost:54320/MobilityDatabaseTest
+
+        export LIQUIBASE_COMMAND_USERNAME=postgres
+
+        export LIQUIBASE_COMMAND_PASSWORD=postgres
+
+        liquibase update
+    - name: Generate DB code
+      run: |
+        export USE_TEST_DB=true
+
+        scripts/db-gen.sh
+    - name: Generate API code
+      run: |
+        scripts/setup-openapi-generator.sh
+
+        scripts/api-gen.sh
+    - name: Unit tests - API (ces)
+      shell: bash
+      run: |
+        scripts/api-tests.sh --folder api --html_report
+    - name: Unit tests - Python Functions (ces)
+      shell: bash
+      run: |
+        scripts/api-tests.sh --folder functions-python --html_report
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage_report
+        path: scripts/coverage_reports/
+        overwrite: true
+    - name: Upload DB models
+      uses: actions/upload-artifact@v4
+      with:
+        name: database_gen
+        path: api/src/database_gen/
+        overwrite: true
+    - name: API generated code
+      uses: actions/upload-artifact@v4
+      with:
+        name: feeds_gen
+        path: api/src/feeds_gen/
+        overwrite: true
