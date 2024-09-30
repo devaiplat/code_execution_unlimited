@@ -1,0 +1,129 @@
+name: opensafely-core/ehrql
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  gentests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: opensafely-core/setup-action@v1
+      with:
+        install-just: true
+        python-version: 3.11
+    - name: Set up dev environment
+      run: just devenv
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run `just test tests/generative/test_query_model.py::test_query_model` in batches (ces) (ces)
+      run: |
+        set -euo pipefail
+
+        start_time=$(date +%s)
+
+
+        export \
+          GENTEST_EXAMPLES=150 \
+          GENTEST_RANDOMIZE=t \
+          GENTEST_MAX_DEPTH=25
+
+        # We get a maximum of 6 hours runtime with Github Actions so breaking
+
+        # the loop after 4 hours feels like a reasonably balance of getting a
+
+        # decent amount of generative testing done while leaving plenty of
+
+        # headroom.
+
+        end_time=$((start_time + 4 * 3600))
+
+        i=1
+
+
+        while true; do
+          echo
+          echo "==> Running test batch $i with $GENTEST_EXAMPLES examples"
+          echo
+
+          # Do the actual testing
+          set +e
+          just test tests/generative/test_query_model.py::test_query_model
+          rc=$?
+          set -e
+
+          # 6 == dead database error, continue to remove db containers and start new batch
+          if [[ $rc -ne 0 && $rc -ne 6 ]]; then
+            exit $rc
+          fi
+
+          if [[ $(date +%s) -ge $end_time ]]; then
+            break
+          fi
+
+          just remove-database-containers
+          ((i++))
+        done
+    - name: Notify Slack on Failure
+      if: failure() && github.ref_name == 'main'
+      uses: zuplo/github-action-slack-notify-build@cf8e7e66a21d76a8125ea9648979c30920195552
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      with:
+        channel_id: C069YDR4NCA
+        status: Generative Test Failure
+        color: danger
