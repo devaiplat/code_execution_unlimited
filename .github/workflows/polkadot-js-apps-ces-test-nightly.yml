@@ -1,0 +1,37 @@
+name: polkadot-js/apps
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  alltests:
+    strategy:
+      matrix:
+        step:
+        - test:all
+    name: ${{ matrix.step }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
+    - name: ${{ matrix.step }}
+      run: |
+        yarn install --immutable
+
+        yarn ${{ matrix.step }}
