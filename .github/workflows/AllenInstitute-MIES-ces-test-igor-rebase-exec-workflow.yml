@@ -1,0 +1,67 @@
+name: AllenInstitute/MIES
+run-name: Test Rebase Exec Igor Workflow
+env:
+  CI_IGOR_REVISION: r56565
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  Test:
+    name: ${{ inputs.overwrite_job_name && inputs.job_name || 'Run' }}
+    runs-on: ${{ fromJson(inputs.target) }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    env:
+      CI_EXPENSIVE_CHECKS: ${{ inputs.expensive_checks }}
+      CI_INSTRUMENT_TESTS: ${{ inputs.instrument_tests }}
+      CI_SKIP_COMPILATION_TEST_DEFINES: 1
+    steps:
+    - name: Check out repository code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Initial repo config
+      run: tools/initial-repo-config.sh
+    - name: List of commits to operate on
+      run: git log --pretty=ref origin/main..
+    - name: Cleanup earlier rebase invocations
+      run: git rebase --quit 2>/dev/null || true
+    - name: Compile check each commit with ${{ inputs.experiment }}
+      run: |
+        git rebase --exec "git log --pretty=ref -n1"                                                \
+                   --exec "tools/clean_mies_installation.sh ${{ inputs.installer_flags }}"          \
+                   --exec "tools/autorun-test.sh -p ${{ inputs.experiment }} -v IP_9_64" origin/main
+    - name: Gather log files and crash dumps
+      if: always()
+      run: tools/gather-logfiles-and-crashdumps.sh
+    - name: upload artifacts
+      uses: actions/upload-artifact@v4
+      if: ${{ always() }}
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: >
+          Packages/tests/**/JU_*.xml
+
+          Packages/tests/**/*.log
+
+          Diagnostics
+
+          **/*.jsonl
+        if-no-files-found: error
