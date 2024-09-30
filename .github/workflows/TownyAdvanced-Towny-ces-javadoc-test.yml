@@ -1,0 +1,28 @@
+name: TownyAdvanced/Towny
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+    - name: "Deploy JavaDoc \U0001F680"
+      uses: MathieuSoysal/Javadoc-publisher.yml@v2.4.0
+      with:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        javadoc-branch: javadoc
+        java-version: 17
+        target-folder: javadoc/prerelease
+        project: maven
