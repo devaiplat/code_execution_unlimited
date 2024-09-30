@@ -1,0 +1,28 @@
+name: camunda/camunda
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  e2e:
+    name: Run e2e testbench process
+    uses: ./.github/workflows/zeebe-testbench.yaml
+    with:
+      processId: e2e_testbench_protocol
+      variables: >
+        { \"zeebeImage\":\"$IMAGE\", \"generationTemplate\":\"${{ inputs.generation || 'Zeebe SNAPSHOT' }}\", \"channel\": \"Internal Dev\", \"branch\": \"${{ inputs.branch || 'main' }}\", \"build\":  \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\", \"clusterPlan\":\"${{ inputs.clusterPlan }}\", \"region\":\"Chaos, Belgium, Europe (europe-west1)\", \"properties\":[\"allInstancesAreCompleted\"], \"testProcessId\": \"e2e-test\", \"testParams\": { \"maxTestDuration\": \"${{ inputs.maxTestDuration || 'P5D' }}\", \"starter\": [ {\"rate\": 20, \"processId\": \"one-task-one-timer\" },
+                       {\"rate\": 10, \"processId\": \"ping-pong-message\" } ],
+        \"verifier\" : { \"maxInstanceDuration\" : \"${{ inputs.maxInstanceDuration }}\" }, \"fault\": ${{ inputs.fault || 'null' }} } }
+      branch: ${{ inputs.branch }}
+    secrets: inherit
