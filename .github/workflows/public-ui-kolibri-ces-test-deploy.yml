@@ -1,0 +1,58 @@
+name: public-ui/kolibri
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      id: pnpm-install
+      with:
+        version: 9
+    - name: Get pnpm store directory
+      id: pnpm-cache
+      shell: bash
+      run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+    - uses: actions/cache@v4
+      name: Setup pnpm cache
+      with:
+        path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store
+        restore-keys: >
+          ${{ runner.os }}-pnpm-store
+    - name: Install
+      run: pnpm i --no-frozen-lockfile --no-verify-store-integrity
+    - name: Build
+      run: pnpm --filter @public-ui/sample-react... build
+    - name: Netlify Deploy
+      uses: netlify/actions/cli@master
+      id: netlify
+      env:
+        NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+        NETLIFY_SITE_ID: ${{ vars.NETLIFY_SITE_ID }}
+      with:
+        args: deploy --filter=@public-ui/sample-react --alias="$GITHUB_REF_NAME"
