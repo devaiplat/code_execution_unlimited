@@ -1,0 +1,92 @@
+name: AmadeusITGroup/otter
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  NX_SKIP_NX_CACHE: ${{ inputs.skipNxCache }}
+  YARN_ENABLE_HARDENED_MODE: 0
+permissions:
+  contents: read
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    env:
+      NX_CLOUD_ACCESS_TOKEN: ${{ secrets.NX_CLOUD_ACCESS_TOKEN }}
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: ./tools/github-actions/download-build-output
+    - uses: ./tools/github-actions/setup
+    - run: yarn playwright install
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run e2e tests (ces) (ces)
+      run: |
+        npx --yes http-server apps/showcase/dist/browser -p 8080 -s &
+
+        npx --yes wait-on $PLAYWRIGHT_TARGET_URL -t 5000
+
+        yarn test-e2e
+      shell: bash
+      env:
+        PLAYWRIGHT_TARGET_URL: http://127.0.0.1:8080
+    - name: Publish tests reports (ces)
+      if: failure()
+      uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874
+      with:
+        name: e2e-report
+        path: apps/showcase/playwright-reports
