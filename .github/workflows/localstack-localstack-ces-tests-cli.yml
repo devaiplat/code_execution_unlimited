@@ -1,0 +1,127 @@
+name: localstack/localstack
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+env:
+  PYTEST_LOGLEVEL: ${{ inputs.PYTEST_LOGLEVEL || 'WARNING' }}
+  TINYBIRD_URL: https://api.tinybird.co
+  TINYBIRD_DATASOURCE: community_tests_cli
+  TINYBIRD_TOKEN: ${{ secrets.TINYBIRD_CI_TOKEN }}
+  CI_COMMIT_BRANCH: ${{ github.head_ref || github.ref_name }}
+  CI_COMMIT_SHA: ${{ github.sha }}
+  CI_JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+  TINYBIRD_PYTEST_ARGS: ${{ github.ref == 'refs/heads/master' && '--report-to-tinybird ' || '' }}
+permissions:
+  contents: read
+jobs:
+  cli-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+        - 3.8
+        - 3.9
+        - 3.10
+        - 3.11
+        - 3.12
+    timeout-minutes: 10
+    env:
+      CI_JOB_NAME: ${{ github.job }}-${{ matrix.python-version }}
+      CI_JOB_ID: ${{ github.job }}-${{ matrix.python-version }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python
+      id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Install CLI test dependencies (ces) (ces)
+      run: |
+        make venv
+
+        source .venv/bin/activate
+
+        pip install -e .
+
+        pip install pytest pytest-tinybird
+    - name: Run CLI tests (ces)
+      env:
+        PYTEST_ADDOPTS: ${{ env.TINYBIRD_PYTEST_ARGS }}-p no:localstack.testing.pytest.fixtures -p no:localstack_snapshot.pytest.snapshot -p no:localstack.testing.pytest.filters -p no:localstack.testing.pytest.fixture_conflicts -p no:localstack.testing.pytest.validation_tracking -p no:localstack.testing.pytest.path_filter -p no:tests.fixtures -p no:localstack.testing.pytest.stepfunctions.fixtures -s
+        TEST_PATH: tests/cli/
+      run: make test
+  push-to-tinybird:
+    if: true
+    runs-on: ubuntu-latest
+    needs: cli-tests
+    permissions:
+      actions: read
+    steps:
+    - name: Push to Tinybird
+      uses: localstack/tinybird-workflow-push@v3
+      with:
+        workflow_id: tests_cli
+        tinybird_token: ${{ secrets.TINYBIRD_CI_TOKEN }}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        tinybird_datasource: ci_workflows
