@@ -1,0 +1,79 @@
+name: bdunderscore/modular-avatar
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build-docs:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: modular-avatar-images
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install logo assets
+      run: |
+        cp -Rv modular-avatar-images/img/* docs~/static/img
+    - name: Setup yarn 2.0
+      run: |
+        corepack enable
+
+        corepack prepare yarn@stable --activate
+    - name: Get yarn cache directory path
+      id: yarn-cache-dir-path
+      run: echo "dir=$(cd docs~; yarn config get cacheFolder)" >> $GITHUB_OUTPUT
+    - uses: actions/cache@v4
+      id: yarn-cache
+      with:
+        path: ${{ steps.yarn-cache-dir-path.outputs.dir }}
+        key: ${{ runner.os }}-yarn-docs-${{ hashFiles('**/yarn.lock') }}
+        restore-keys: >
+          ${{ runner.os }}-yarn-docs-
+    - name: Set baseUri
+      if: ${{ inputs.path }}
+      run: |
+        BASEURL="/${{ inputs.path }}/" perl -i -p -e "s{baseUrl: '/'}{baseUrl: '\$ENV{BASEURL}'}" docs~/docusaurus.config.js
+
+        cat docs~/docusaurus.config.js
+    - name: Build docs
+      run: |
+        cd docs~
+
+        yarn install --immutable
+
+        yarn build
+
+        ls -lR build
+    - name: Set robots.txt
+      run: |
+        if [ -e docs~/robots.txt ]; then
+          cp docs~/robots.txt docs~/build/robots.txt
+        fi
+    - name: Package documentation
+      run: |
+        tar -cf docs.tar -C docs~/build .
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact || 'docs' }}
+        path: docs.tar
