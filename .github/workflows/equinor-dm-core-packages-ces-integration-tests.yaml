@@ -1,0 +1,196 @@
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  integration-tests:
+    timeout-minutes: 60
+    runs-on: dm-core-runner
+    outputs:
+      dm_cli_version: ${{ steps.capture_dm_cli_version.outputs.version }}
+      dmss_version: ${{ steps.capture_dmss_version.outputs.dmss_version }}
+      job_version: ${{ steps.capture_job_version.outputs.job_version }}
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - name: Install daemon process manager
+      run: npm install pm2 -g
+    - name: Cache node modules
+      id: cache-npm
+      uses: actions/cache@v3
+      env:
+        cache-name: cache-node-modules
+      with:
+        path: >
+          ./example/node_modules
+
+          ./node_modules
+
+          ./yarn.lock
+        key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('./packages/dm-core/package.json')}}-${{ hashFiles('./packages/dm-core-plugins/package.json') }}
+    - name: Install dependencies
+      run: yarn install
+    - name: Build packages
+      run: yarn build:packages
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Start example application
+      run: pm2 start "yarn build --mode test && yarn serve" --name web --wait-ready
+      working-directory: example/
+    - name: Pull docker images
+      run: docker-compose pull
+      working-directory: example/
+    - name: Run docker images
+      env:
+        ENVIRONMENT: CI
+      run: docker-compose up -d
+      working-directory: example/
+    - name: Capture output DMSS version
+      id: capture_dmss_version
+      run: |
+        docker-compose exec -t dmss cat src/version.txt > dmss_version.txt
+
+        dmss_version=$(tail -n 1 dmss_version.txt)
+
+        echo "dmss_version=$dmss_version" >> "$GITHUB_OUTPUT"
+      working-directory: example/
+    - name: Capture job-api version
+      id: capture_job_version
+      run: |
+        docker-compose exec -t job-api cat version.txt > job_version.txt
+
+        job_version=$(tail -n 1 job_version.txt)
+
+        echo "job_version=$job_version" >> "$GITHUB_OUTPUT"
+      working-directory: example/
+    - name: Pack core plugins
+      run: npm pack @development-framework/dm-core-plugins
+      working-directory: example/
+    - name: Extract tarball
+      run: tar -xzf development-framework-dm-core-plugins-*.tgz
+      working-directory: example/
+    - name: Create required directory in node_modules
+      run: mkdir -p node_modules/@development-framework/
+      working-directory: example/
+    - name: Move package to directory in node_modules
+      run: mv package/ node_modules/@development-framework/dm-core-plugins
+      working-directory: example/
+    - uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    - name: Install dm-cli package
+      run: |
+        python -m pip install --upgrade pip
+
+        pip install dm-cli
+      working-directory: example/
+    - name: Capture dm-cli version
+      id: capture_dm_cli_version
+      run: echo "version=$(dm --version)" >> "$GITHUB_OUTPUT"
+      working-directory: example/
+    - name: Run reset-app script
+      run: ./reset-app.sh
+      working-directory: example/
+    - name: Warmup cache
+      run: ./heat-cache.sh
+      working-directory: example/
+    - name: Cache e2e dependencies
+      uses: actions/cache@v3
+      id: cache-e2e
+      env:
+        cache-name: cache-e2e-deps-modules
+      with:
+        path: >
+          ~/.cache/ms-playwright
+
+          ./e2e/node_modules
+
+          ./yarn.lock
+        key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('./package.json')}}
+    - name: Install dependencies
+      run: |
+        npm install --package-lock-only
+
+        npm ci
+      working-directory: e2e/
+    - run: npx playwright install --with-deps
+      if: steps.cache-e2e.outputs.cache-hit != 'true'
+      working-directory: e2e/
+    - name: Run e2e tests (ces)
+      run: |
+        pm2 ps
+
+        npx playwright test
+      working-directory: e2e/
+    - uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: e2e/test-results/
+        retention-days: 30
+    - name: Output dmss logs on failure
+      if: failure()
+      run: docker logs example_dmss_1
+    - uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: playwright-report
+        path: e2e/playwright-report/
+        retention-days: 30
+name: equinor/dm-core-packages
