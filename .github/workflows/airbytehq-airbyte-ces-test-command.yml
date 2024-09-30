@@ -1,0 +1,32 @@
+name: airbytehq/airbyte
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  write-deprecation-message:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Print deprecation message
+      uses: peter-evans/create-or-update-comment@v1
+      with:
+        comment-id: ${{ github.event.inputs.comment-id }}
+        body: >
+          > :warning: The test slash command is now deprecated.<br>
+
+          The connector tests are automatically triggered as CI checks.<br>
+
+          Please use /legacy-test if you need to test CDK or CAT changes.<br>
+
+          Please join post to #pipeline-complaint-hotline slack channel if something is not working as expected.<br>
