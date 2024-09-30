@@ -1,0 +1,64 @@
+name: KinsonDigital/Velaptor
+run-name: ✅Unit Testing Status Check (${{ github.base_ref }} branch)
+defaults:
+  run:
+    shell: pwsh
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  build_velaptor_testing:
+    name: Build ${{ vars.PROJECT_NAME }} Testing App
+    uses: KinsonDigital/Infrastructure/.github/workflows/build-csharp-project.yml@v13.6.3
+    with:
+      project-name: ${{ vars.PROJECT_NAME }}Testing
+      build-config: Debug
+      net-sdk-version: ${{ vars.NET_SDK_VERSION }}
+      checkout-repository: ${{ github.event.pull_request.head.repo.full_name }}
+      checkout-ref: ${{ github.event.pull_request.head.ref }}
+    secrets:
+      cicd-pat: ${{ secrets.CICD_TOKEN }}
+  build_avalonia_testing:
+    name: Build Avalonia Testing App
+    uses: KinsonDigital/Infrastructure/.github/workflows/build-csharp-project.yml@v13.6.3
+    with:
+      project-name: AvaloniaTesting
+      build-config: Debug
+      net-sdk-version: ${{ vars.NET_SDK_VERSION }}
+      checkout-repository: ${{ github.event.pull_request.head.repo.full_name }}
+      checkout-ref: ${{ github.event.pull_request.head.ref }}
+    secrets:
+      cicd-pat: ${{ secrets.CICD_TOKEN }}
+  run_tests:
+    name: Run ${{ vars.PROJECT_NAME }} Tests
+    uses: KinsonDigital/Infrastructure/.github/workflows/run-csharp-tests.yml@v13.6.3
+    with:
+      project-name: ${{ vars.PROJECT_NAME }}Tests
+      build-config: Debug
+      net-sdk-version: ${{ vars.NET_SDK_VERSION }}
+      checkout-repository: ${{ github.event.pull_request.head.repo.full_name }}
+      checkout-ref: ${{ github.event.pull_request.head.ref }}
+    secrets:
+      cicd-pat: ${{ secrets.CICD_TOKEN }}
+  test_status_check:
+    name: ${{ vars.PROJECT_NAME }} Test Status Check
+    needs:
+    - build_velaptor_testing
+    - build_avalonia_testing
+    - run_tests
+    runs-on: ubuntu-latest
+    steps:
+    - name: Print Status Check Pass Message
+      run: Write-Host "::notice::✅Test Status Check Passed✅";
