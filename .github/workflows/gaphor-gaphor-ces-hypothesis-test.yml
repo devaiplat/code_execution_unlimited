@@ -1,0 +1,113 @@
+name: gaphor/gaphor
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+env:
+  python_version: 3.12
+permissions:
+  issues: write
+jobs:
+  hypothesis:
+    runs-on: ubuntu-22.04
+    container: fedora:39
+    timeout-minutes: 60
+    steps:
+    - name: Install Linux Dependencies
+      run: |
+        dnf install -y gcc git graphviz pkg-config python-launcher upx mutter dbus-x11 gtk4 gobject-introspection-devel cairo-gobject-devel gtksourceview5-devel libadwaita-devel cairo-devel python${{ env.python_version }}-devel
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        ref: ${{ github.event.inputs.ref }}
+        repository: ${{ github.event.inputs.repoName }}
+    - name: Set ownership of checkout directory
+      run: chown -R $(id -u):$(id -g) $PWD
+    - name: Use Python Dependency Cache
+      uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}-39
+    - name: Use Hypothesis Cache
+      id: restore-cache
+      uses: actions/cache/restore@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      with:
+        path: .hypothesis
+        key: ${{ runner.os }}-hypothesis
+    - name: Install Dependencies
+      uses: ./.github/actions/install
+      with:
+        python-command: python${{ env.python_version }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test with Hypothesis (ces) (ces)
+      env:
+        XDG_RUNTIME_DIR: /tmp
+      run: |
+        eval $(dbus-launch --auto-syntax)
+
+        mutter --wayland --no-x11 --sm-disable --headless -- poetry run pytest -m hypothesis --hypothesis-profile=ci tests/test_model_consistency.py
+    - name: Create Issue on Failure
+      uses: JasonEtco/create-an-issue@1b14a70e4d8dc185e5cc76d3bec9eab20257b2c5
+      if: failure()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        filename: .github/hypothesis-test-failed.md
+        update_existing: true
+    - name: Save cache
+      uses: actions/cache/save@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9
+      if: always()
+      with:
+        path: .hypothesis
+        key: steps.restore-cache.output.key
