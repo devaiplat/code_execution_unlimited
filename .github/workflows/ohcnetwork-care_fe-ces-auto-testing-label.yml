@@ -1,0 +1,64 @@
+name: ohcnetwork/care_fe
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  auto_label:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check PR Conditions and Add Label
+      id: check_conditions
+      uses: actions/github-script@v5
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: >
+          const pr = context.payload.pull_request;
+
+          const comment = context.payload.comment;
+
+          const review = context.payload.review;
+
+
+          if (pr) {
+            const isDraft = pr.draft;
+            const isReadyForTestingComment = comment && comment.body.includes('ready for testing');
+            const isChangesRequired = review && review.state === 'changes_requested';
+
+            if ((isReadyForTestingComment && !isDraft) || (!isDraft && pr.draft_changed)) {
+              await github.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                labels: ['needs testing']
+              });
+            }
+
+            if (isChangesRequired) {
+              await github.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: 'Reminder: To add the "needs testing" label, comment "ready for testing" on this PR.'
+              });
+              if (pr.labels.some(label => label.name === 'needs testing')) {
+                await github.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  name: 'needs testing'
+                });
+              }
+            }
+          }
