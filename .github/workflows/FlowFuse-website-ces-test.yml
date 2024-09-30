@@ -1,0 +1,112 @@
+name: FlowFuse/website
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  test_website:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out website repository
+      uses: actions/checkout@v4
+      with:
+        path: website
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Check out FlowFuse/flowfuse repository (to access the docs)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+        path: flowfuse
+    - name: Generate a token
+      id: generate_token
+      uses: tibdex/github-app-token@v2
+      with:
+        app_id: ${{ secrets.GH_BOT_APP_ID }}
+        private_key: ${{ secrets.GH_BOT_APP_KEY }}
+    - name: Check out FlowFuse/blueprint-library repository (to access the blueprints)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+        path: blueprint-library
+        token: ${{ steps.generate_token.outputs.token }}
+    - name: Cache image pipeline output
+      uses: actions/cache@v4
+      with:
+        key: img-pipeline-cache
+        path: website/_site/img
+    - uses: actions/setup-node@v4
+      with:
+        cache: npm
+        cache-dependency-path: ./website/package-lock.json
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - run: npm run docs
+      working-directory: website
+    - run: npm run blueprints
+      working-directory: website
+    - name: Install Dependencies
+      run: npm install
+      working-directory: website
+    - name: Build the forge
+      run: npm run build:skip-images
+      working-directory: website
+    - uses: untitaker/hyperlink@0.1.32
+      with:
+        args: website/_site/ --check-anchors --sources website/src
+    - name: Test the website (ces)
+      run: npm run test
+      working-directory: website
