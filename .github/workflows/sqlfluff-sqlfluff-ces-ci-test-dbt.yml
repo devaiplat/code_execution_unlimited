@@ -1,0 +1,108 @@
+name: sqlfluff/sqlfluff
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  modular-python-test:
+    name: py${{ inputs.python-version }}-${{ inputs.dbt-version }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres
+        env:
+          POSTGRES_PASSWORD: password
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+        ports:
+        - 5432:5432
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+        cache-dependency-path: >
+          setup.cfg
+
+          requirements_dev.txt
+    - name: Install dependencies
+      run: pip install tox
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run the tests (with coverage) (ces) (ces)
+      if: ${{ inputs.coverage }}
+      run: tox -e ${{ inputs.dbt-version }} -- --cov=sqlfluff_templater_dbt plugins/sqlfluff-templater-dbt
+    - name: Run the tests (without coverage) (ces)
+      if: ${{ !inputs.coverage }}
+      run: tox -e ${{ inputs.dbt-version }} -- plugins/sqlfluff-templater-dbt
+    - name: Coveralls Parallel (coveralls)
+      uses: coverallsapp/github-action@v2
+      if: ${{ inputs.coverage }}
+      with:
+        path-to-lcov: coverage.lcov
+        github-token: ${{ secrets.gh_token }}
+        flag-name: run-${{ inputs.dbt-version }}
+        parallel: true
+    - name: Upload coverage data (github)
+      uses: actions/upload-artifact@v4
+      if: ${{ inputs.coverage }}
+      with:
+        name: coverage-data-py${{ inputs.python-version }}-${{ inputs.dbt-version }}
+        path: .coverage.*
+        if-no-files-found: ignore
+        include-hidden-files: true
