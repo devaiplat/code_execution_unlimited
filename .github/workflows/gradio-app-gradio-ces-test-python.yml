@@ -1,0 +1,136 @@
+name: gradio-app/gradio
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: ${{ github.event.pull_request.number }}-${{ github.ref_name }}-${{ github.workflow }}
+  cancel-in-progress: true
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+  HF_TOKEN: ${{ vars.HF_TOKEN }}
+permissions: {}
+jobs:
+  changes:
+    permissions:
+      contents: read
+      pull-requests: read
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.changes.outputs.should_run }}
+      sha: ${{ steps.changes.outputs.sha }}
+      pr_number: ${{ steps.changes.outputs.pr_number }}
+      source_branch: ${{ steps.changes.outputs.source_branch }}
+      source_repo: ${{ steps.changes.outputs.source_repo }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: gradio-app/gradio/.github/actions/changes@main
+      id: changes
+      with:
+        filter: gradio
+        token: ${{ secrets.GITHUB_TOKEN }}
+  test:
+    permissions:
+      contents: read
+    name: test-${{ matrix.os }}-${{ matrix.test-type == 'flaky' && 'flaky' || 'not-flaky'}}
+    needs: changes
+    if: true
+    strategy:
+      matrix:
+        os:
+        - ubuntu-latest
+        - windows-latest
+        test-type:
+        - not flaky
+        - flaky
+        exclude:
+        - os: ${{ github.event_name == 'pull_request' && contains( github.event.pull_request.labels.*.name, 'windows-tests') && 'dummy' || 'windows-latest' }}
+        - test-type: ${{ github.event_name == 'pull_request' && contains( github.event.pull_request.labels.*.name, 'flaky-tests') && 'dummy' || 'flaky' }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: install dependencies
+      id: install_deps
+      uses: gradio-app/gradio/.github/actions/install-all-deps@main
+      with:
+        python_version: 3.8
+        os: ${{ matrix.os }}
+        test: true
+    - name: Lint
+      if: runner.os == 'Linux'
+      run: |
+        . venv/bin/activate
+
+        ./scripts/lint_backend.sh
+    - name: Typecheck
+      if: runner.os == 'Linux'
+      run: |
+        . venv/bin/activate
+
+        ./scripts/type_check_backend.sh
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run tests (ces) (ces)
+      run: |
+        . ${{steps.install_deps.outputs.venv_activate}}
+
+        python -m pytest -m "${{ matrix.test-type }}"
