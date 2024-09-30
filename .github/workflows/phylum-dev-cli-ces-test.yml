@@ -1,0 +1,232 @@
+name: phylum-dev/cli
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  rustfmt:
+    if: true
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Checkout the repo
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Rust nightly toolchain
+      run: rustup toolchain install --no-self-update nightly --profile minimal -c rustfmt
+    - name: Format check
+      run: cargo +nightly fmt --all -- --check
+  clippy:
+    if: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-20.04
+          flags: --all-features
+        - os: macos-14
+          flags: --all-features
+        - os: windows-latest
+          flags: --no-default-features -F extensions
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Checkout the repo
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - if: ${{ runner.os == 'macOS' }}
+      name: Install protoc
+      run: brew install protobuf
+    - if: ${{ runner.os == 'Linux' }}
+      name: Install protoc
+      run: sudo apt install -y protobuf-compiler
+    - if: ${{ runner.os == 'Windows' }}
+      name: Install protoc
+      run: choco install protoc
+    - name: Install Rust toolchain
+      run: rustup toolchain install --no-self-update stable --profile minimal -c clippy
+    - name: Clippy
+      run: cargo +stable clippy --locked ${{ matrix.flags }} --all-targets -- -D warnings
+  test-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-20.04
+        - macos-14
+        include:
+        - os: windows-latest
+          flags: --no-default-features -F extensions
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Checkout the repo
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - if: ${{ runner.os == 'macOS' }}
+      name: Install protoc
+      run: brew install protobuf
+    - if: ${{ runner.os == 'Linux' }}
+      name: Install protoc
+      run: sudo apt install -y protobuf-compiler
+    - if: ${{ runner.os == 'Windows' }}
+      name: Install protoc
+      run: choco install protoc
+    - name: Install Rust toolchain
+      run: rustup toolchain install --no-self-update stable --profile minimal
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Test (ces) (ces)
+      run: cargo +stable test --locked ${{ matrix.flags }}
+  oldstable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-20.04
+        - macos-14
+        - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Checkout the repo
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - if: ${{ runner.os == 'macOS' }}
+      name: Install protoc
+      run: brew install protobuf
+    - if: ${{ runner.os == 'Linux' }}
+      name: Install protoc
+      run: sudo apt install -y protobuf-compiler
+    - if: ${{ runner.os == 'Windows' }}
+      name: Install protoc
+      run: choco install protoc
+    - name: Oldstable
+      shell: bash
+      run: |
+        oldstable=$(grep rust-version ./cli/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+
+        rustup toolchain install --profile minimal "${oldstable}"
+
+        cargo "+${oldstable}" check
+  all-features:
+    if: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-20.04
+        - macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+    - name: Checkout the repo
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - if: ${{ runner.os == 'macOS' }}
+      name: Install protoc
+      run: brew install protobuf
+    - if: ${{ runner.os == 'Linux' }}
+      name: Install protoc
+      run: sudo apt install -y protobuf-compiler
+    - name: Install Rust toolchain
+      run: rustup toolchain install --no-self-update stable --profile minimal
+    - name: All Features
+      env:
+        PHYLUM_API_KEY: ${{ secrets.PHYLUM_TOKEN_STAGING }}
+      run: cargo +stable test --all-features
+  deno-checks:
+    if: true
+    runs-on: ubuntu-latest
+    container: denoland/deno
+    steps:
+    - name: Checkout the repo
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: deno fmt
+      run: deno fmt --check
+    - name: deno lint
+      run: deno lint
+    - name: deno check
+      run: deno check --no-lock extensions/**/*.ts
+  shellcheck:
+    if: true
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout the repo
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Script Style Check
+      run: find . -iname "*.sh" -print0 | xargs -0 shellcheck -o all -S style -s sh
+  test:
+    if: true
+    needs:
+    - clippy
+    - test-matrix
+    - oldstable
+    - all-features
+    runs-on: ubuntu-latest
+    steps:
+    - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      name: Fail the build
+      run: exit 1
