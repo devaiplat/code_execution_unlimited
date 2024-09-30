@@ -1,0 +1,175 @@
+name: OpenEnergyPlatform/oeplatform
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  run-tests:
+    runs-on: ubuntu-20.04
+    env:
+      OEP_DJANGO_USER: postgres
+      OEP_DB_PW: postgres
+      LOCAL_DB_USER: postgres
+      LOCAL_DB_PASSWORD: postgres
+      TOXENV: py3
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: ghcr.io/openenergyplatform/oeplatform-postgres:latest
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+        - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+      fuseki:
+        image: stain/jena-fuseki
+        ports:
+        - 3030:3030
+        options: --name fuseki -e FUSEKI_DATASET_1=ds -e FUSEKI_MEM_1=true
+    strategy:
+      matrix:
+        python-version:
+        - 3.10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install linux dependencies
+      run: |
+        sudo apt-get update -y
+
+        sudo apt-get install -y postgresql-client
+    - name: Set up JDK 11
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 11
+    - name: Wait for Fuseki to start
+      run: |
+        for i in {1..30}; do
+          if nc -z localhost 3030; then
+            echo "Fuseki is up!"
+            break
+          fi
+          echo "Waiting for Fuseki..."
+          sleep 2
+        done
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: >
+          ${{ runner.os }}-pip-
+    - name: Install python dependencies
+      run: |
+        python -m pip install --upgrade pip 'setuptools<72.0.0' wheel
+
+        pip install -r requirements.txt
+
+        pip install tox-uv
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Add schemas for testing (ces) (ces)
+      env:
+        PGPASSWORD: postgres
+      run: |
+        psql -h localhost -p 5432 -U postgres -c "CREATE SCHEMA IF NOT EXISTS sandbox" oedb
+
+        psql -h localhost -p 5432 -U postgres -c "CREATE SCHEMA IF NOT EXISTS _sandbox" oedb
+    - name: oeo & oeo-ext integration
+      run: |
+        mkdir -p ontologies/oeo/1/
+
+        mkdir -p ontologies/oeo/1/imports
+
+        mkdir -p ontologies/oeo/1/modules
+
+        wget https://openenergyplatform.org/ontology/oeo/releases/oeo-full.owl -P ontologies/oeo/1/
+
+
+        mkdir -p media/oeo_ext/
+
+        cp oeo_ext/oeo_extended_store/oeox_template/oeo_ext_template_empty.owl  media/oeo_ext/oeo_ext.owl
+    - name: Collectstatic files & compress
+      run: |
+        cp oeplatform/securitysettings.py.default oeplatform/securitysettings.py
+
+        python manage.py collectstatic
+
+        python manage.py compress
+    - name: Migrations & User creation
+      run: |
+        python manage.py makemigrations --check
+
+        python manage.py migrate
+
+        python manage.py alembic upgrade head
+
+        python manage.py shell -c "from login.models import myuser; u=myuser.objects.create_user(name='test',email='test@test.com',affiliation='');u.is_mail_verified=True;u.save()"
+    - name: Create API token
+      run: |
+        echo LOCAL_OEP_TOKEN=`python manage.py shell -c "from login.models import Token; print(Token.objects.filter(user__name='test').first().key)"` >> $GITHUB_ENV
+    - name: Start OEP
+      run: python manage.py runserver 8000 &
+    - name: Run tests with tox (ces)
+      run: tox -v
