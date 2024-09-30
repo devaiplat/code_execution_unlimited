@@ -1,0 +1,61 @@
+name: electron/electron
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+concurrency:
+  group: electron-build-and-test-and-nan-${{ inputs.target-platform }}-${{ inputs.target-arch }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !endsWith(github.ref, '-x-y') }}
+jobs:
+  build:
+    uses: ./.github/workflows/pipeline-segment-electron-build.yml
+    with:
+      build-runs-on: ${{ inputs.build-runs-on }}
+      build-container: ${{ inputs.build-container }}
+      target-platform: ${{ inputs.target-platform }}
+      target-arch: ${{ inputs.target-arch }}
+      is-release: ${{ inputs.is-release }}
+      gn-build-type: ${{ inputs.gn-build-type }}
+      generate-symbols: ${{ inputs.generate-symbols }}
+      upload-to-storage: ${{ inputs.upload-to-storage }}
+    secrets: inherit
+  gn-check:
+    uses: ./.github/workflows/pipeline-segment-electron-gn-check.yml
+    with:
+      target-platform: ${{ inputs.target-platform }}
+      target-arch: ${{ inputs.target-arch }}
+      check-runs-on: ${{ inputs.check-runs-on }}
+      check-container: ${{ inputs.build-container }}
+      gn-build-type: ${{ inputs.gn-build-type }}
+      is-asan: ${{ inputs.is-asan }}
+    secrets: inherit
+  test:
+    uses: ./.github/workflows/pipeline-segment-electron-test.yml
+    needs: build
+    with:
+      target-arch: ${{ inputs.target-arch }}
+      target-platform: ${{ inputs.target-platform }}
+      test-runs-on: ${{ inputs.test-runs-on }}
+      test-container: ${{ inputs.test-container }}
+    secrets: inherit
+  nn-test:
+    uses: ./.github/workflows/pipeline-segment-node-nan-test.yml
+    needs: build
+    with:
+      target-arch: ${{ inputs.target-arch }}
+      target-platform: ${{ inputs.target-platform }}
+      test-runs-on: ${{ inputs.test-runs-on }}
+      test-container: ${{ inputs.test-container }}
+      gn-build-type: ${{ inputs.gn-build-type }}
+    secrets: inherit
