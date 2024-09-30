@@ -1,0 +1,156 @@
+name: theiagen/public_health_bioinformatics
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+jobs:
+  changes:
+    name: Check for changes
+    runs-on: ubuntu-latest
+    outputs:
+      workflows: ${{ steps.filter.outputs.changes }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        filters: tests/config/pytest_filter.yml
+  check:
+    runs-on: ubuntu-20.04
+    name: ${{ matrix.tag }} ${{ matrix.engine }}
+    needs: changes
+    if: true
+    strategy:
+      fail-fast: false
+      matrix:
+        tag:
+        - ${{ fromJson(needs.changes.outputs.workflows) }}
+        engine:
+        - miniwdl
+        - cromwell
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+    - name: Checkout theiagen/public_health_bioinformatics
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Pull Test Data from bactopia/bactopia-tests (ces) (ces)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        path: bactopia-tests
+        ref: ${{ github.event.inputs.ref }}
+    - uses: mamba-org/setup-micromamba@v1
+      with:
+        environment-file: tests/config/environment.yml
+    - name: Env info and create storage space
+      run: |
+        micromamba list
+
+        micromamba clean -a -y
+
+        uname -a && env
+
+        sudo rm -rf /usr/share/dotnet
+
+        sudo rm -rf /opt/ghc
+
+        sudo rm -rf "/usr/local/share/boost"
+
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+        sudo rm -rf /usr/local/lib/android
+
+        df -h
+    - name: Test ${{ matrix.tag }} (ces)
+      run: TMPDIR=~ pytest --tag ${{ matrix.tag }}_${{ matrix.engine }} --symlink --kwdof --color=yes
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: logs-${{ matrix.engine }}
+        path: >
+          /home/runner/pytest_workflow_*/**/stdout*
+
+          /home/runner/pytest_workflow_*/**/stderr*
+
+          /home/runner/pytest_workflow_*/**/script*
+
+          /home/runner/pytest_workflow_*/**/rc
+
+          /home/runner/pytest_workflow_*/**/command
+
+          /home/runner/pytest_workflow_*/**/*.txt
+
+          /home/runner/pytest_workflow_*/**/*.log
+
+          /home/runner/pytest_workflow_*/**/*.out
+
+          /home/runner/pytest_workflow_*/**/*.err
+
+          /home/runner/pytest_workflow_*/**/DATE
+
+          /home/runner/pytest_workflow_*/**/VERSION
+
+          !/home/runner/pytest_workflow_*/**/*.bam*
+
+          !/home/runner/pytest_workflow_*/**/*.fastq.gz
