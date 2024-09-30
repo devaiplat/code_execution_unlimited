@@ -1,0 +1,404 @@
+name: SharezoneApp/sharezone-app
+on:
+  workflow_dispatch:
+    inputs:
+      repoName:
+        description: Name of the repo
+        required: false
+      patch:
+        description: Base64 encoded patch content
+        required: false
+      command:
+        description: Command to run
+        required: false
+      ref:
+        description: The repo branch, tag, or commit SHA to checkout
+        required: false
+permissions: {}
+jobs:
+  changes:
+    runs-on: ubuntu-22.04
+    outputs:
+      changesFound: ${{ steps.filter.outputs.changesFound }}
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: AurorNZ/paths-filter@3b1f3abc3371cca888d8eb03dfa70bc8a9867629
+      id: filter
+      with:
+        filters: >
+          changesFound:
+            # When we change the Flutter version, we need to trigger this workflow.
+            - ".fvm/fvm_config.json"
+            # We only build and deploy a new version, when user relevant files
+            # or integration test files changed.
+            - "app/**"
+            - "lib/**"
+            - "app/integration_test/**"
+            # We trigger also this workflow, if this workflow is changed, so that new
+            # changes will be applied.
+            - ".github/workflows/integration_tests_app_ci.yml"
+            # The following paths are excluded from the above paths. It's important to
+            # list the paths at the end of the file, so that the exclude paths are
+            # applied.
+            #
+            # See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#example-including-and-excluding-paths.
+            - "!**/*.md"
+            - "!**/*.mdx"
+            - "!**/*.gitignore"
+            - "!**/firebase.json"
+            - "!**/.firebaserc"
+            - "!app/android/fastlane/**"
+  android-integration-test:
+    needs: changes
+    runs-on: ubuntu-22.04
+    if: true
+    defaults:
+      run:
+        working-directory: app
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+      with:
+        distribution: oracle
+        java-version: 17
+    - name: Set Flutter version from FVM config file to environment variables
+      id: fvm-config-action
+      uses: kuhnroyal/flutter-fvm-config-action@4155f8ca4c30a4f2f50df69caa0e4259f6cd1142
+    - uses: subosito/flutter-action@main
+      with:
+        flutter-version: ${{ steps.fvm-config-action.outputs.FLUTTER_VERSION }}
+        channel: ${{ steps.fvm-config-action.outputs.FLUTTER_CHANNEL }}
+    - name: Install patrol cli
+      run: flutter pub global activate patrol_cli 2.5.0
+    - name: Run Flutter build
+      run: |
+        # Flutter build is required to generate files in android/ to build the
+
+        # gradle project.
+
+        #
+
+        # We are using the prod flavor because we were not able to set up
+
+        # Firebase Test Lab with the dev flavor. We always got "No tests
+
+        # found.".
+
+        flutter build apk \
+          --target=lib/main_prod.dart \
+          --flavor prod \
+          --config-only
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Build Instrumentation Test (ces) (ces)
+      run: |
+        patrol build android \
+          --flavor prod \
+          --dart-define USER_1_EMAIL=${{ secrets.INTEGRATION_TEST_USER_1_EMAIL }} \
+          --dart-define USER_1_PASSWORD=${{ secrets.INTEGRATION_TEST_USER_1_PASSWORD }} \
+          -t integration_test/app_test.dart
+    - name: Setup credentials
+      env:
+        TEST_LAB_CREDENTIALS: ${{ secrets.FIREBASE_TEST_LAB_DEV_KEY }}
+      run: |
+        echo $TEST_LAB_CREDENTIALS > firebase-test-lab.json
+
+        gcloud auth activate-service-account --key-file=firebase-test-lab.json
+
+        gcloud --quiet config set project sharezone-debug
+    - name: Run Integration tests (ces)
+      run: |
+        gcloud firebase test android run \
+          --type instrumentation \
+          --app build/app/outputs/apk/prod/debug/app-prod-debug.apk \
+          --test build/app/outputs/apk/androidTest/prod/debug/app-prod-debug-androidTest.apk \
+          --device model=Pixel2,version=30,locale=en,orientation=portrait \
+          --timeout 10m \
+          --use-orchestrator \
+          --environment-variables clearPackageData=true
+    - name: Fail if there are Git diffs
+      run: |
+        # Fail if there are Git diffs and print the diff.
+
+        git diff --exit-code
+
+
+        # Print the Git diff with the file names and their status as a
+
+        # summary. 
+
+        git diff --name-status
+  ios-integration-test:
+    needs: changes
+    runs-on: macos-12
+    if: true
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set Flutter version from FVM config file to environment variables
+      id: fvm-config-action
+      uses: kuhnroyal/flutter-fvm-config-action@4155f8ca4c30a4f2f50df69caa0e4259f6cd1142
+    - uses: subosito/flutter-action@44ac965b96f18d999802d4b807e3256d5a3f9fa1
+      with:
+        flutter-version: ${{ steps.fvm-config-action.outputs.FLUTTER_VERSION }}
+        channel: ${{ steps.fvm-config-action.outputs.FLUTTER_CHANNEL }}
+    - name: Disable Impeller
+      working-directory: app/ios/Runner
+      run: /usr/libexec/PlistBuddy -c "Add :FLTEnableImpeller bool false" Info.plist
+    - uses: futureware-tech/simulator-action@48e51da14445b3eedca643bba4b78d9d8332ff31
+      id: simulator
+      with:
+        model: iPhone 13
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run integration tests (ces) (ces)
+      working-directory: app
+      env:
+        USER_1_EMAIL: ${{ secrets.INTEGRATION_TEST_USER_1_EMAIL }}
+        USER_1_PASSWORD: ${{ secrets.INTEGRATION_TEST_USER_1_PASSWORD }}
+        SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+      run: |
+        # We need to run the integration tests with the prod flavor because
+
+        # using not the default flavor will cause an exception when
+
+        # uninstalling the app, see:
+
+        # https://github.com/flutter/flutter/issues/88690
+
+        flutter drive \
+          --driver=test_driver/integration_test.dart \
+          --target=integration_test/integration_test_old.dart \
+          --flavor prod \
+          --dart-define=USER_1_EMAIL=$USER_1_EMAIL \
+          --dart-define=USER_1_PASSWORD=$USER_1_PASSWORD \
+          -d $SIMULATOR_UDID
+  web-integration-test:
+    needs: changes
+    runs-on: ubuntu-22.04
+    if: true
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Set Flutter version from FVM config file to environment variables
+      id: fvm-config-action
+      uses: kuhnroyal/flutter-fvm-config-action@4155f8ca4c30a4f2f50df69caa0e4259f6cd1142
+    - uses: subosito/flutter-action@44ac965b96f18d999802d4b807e3256d5a3f9fa1
+      with:
+        flutter-version: ${{ steps.fvm-config-action.outputs.FLUTTER_VERSION }}
+        channel: ${{ steps.fvm-config-action.outputs.FLUTTER_CHANNEL }}
+    - name: Install chromedriver
+      uses: nanasess/setup-chromedriver@42cc2998329f041de87dc3cfa33a930eacd57eaa
+    - name: Apply patch
+      shell: bash
+      run: |
+
+                if [ -n "${{ github.event.inputs.patch }}" ]; then
+                   echo "Patch input provided. Applying patch..."
+                   echo "${{ github.event.inputs.patch }}" | base64 --decode | sed 's/\r$//'  > patch.diff
+                   echo "Decoded patch content:"
+                   cat patch.diff 
+                   echo "Apply the patch:"
+                   git apply --verbose patch.diff
+                 else
+                   echo "No patch input provided. Skipping patch application."
+                 fi
+                echo "Print git diff on local repo"
+                git diff
+    - name: Run custom command
+      shell: bash
+      run: |
+         
+                if [ -n "${{ github.event.inputs.command }}" ]; then
+                   echo "Start running custom command"
+                   echo "${{ github.event.inputs.command }}"
+                   output=$(echo "${{ github.event.inputs.command }}" | base64 --decode | sed 's/\r$//')
+                   echo "Decoded custom command is:"
+                   echo $output
+                   echo "!!==================================!!"
+                   echo "Custom command output:"
+                   echo "!!==================================!!"
+                   eval $output
+                   echo "!!==================================!!"
+                   echo "RAN_CUSTOM_COMMAND=true" >> $GITHUB_ENV
+                   echo "Finished running custom command!"
+                   echo "!!== RUN COMPLETED ==!!"
+                fi
+    - name: Exit if custom command was run
+      if: env.RAN_CUSTOM_COMMAND == 'true'
+      shell: bash
+      run: |
+
+                echo "Exiting job after custom command run"
+                exit 1
+    - name: Run integration tests (ces) (ces)
+      working-directory: app
+      env:
+        USER_1_EMAIL: ${{ secrets.INTEGRATION_TEST_USER_1_EMAIL }}
+        USER_1_PASSWORD: ${{ secrets.INTEGRATION_TEST_USER_1_PASSWORD }}
+      run: |
+        chromedriver --port=4444 &
+
+        flutter drive \
+          --driver=test_driver/integration_test.dart \
+          --target=integration_test/integration_test_old.dart \
+          --flavor dev \
+          --dart-define=USER_1_EMAIL=$USER_1_EMAIL \
+          --dart-define=USER_1_PASSWORD=$USER_1_PASSWORD \
+          -d web-server
+  macos-build-test:
+    needs: changes
+    runs-on: macos-13
+    if: true
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    steps:
+    - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      with:
+        repository: ${{ github.event.inputs.repoName }}
+        ref: ${{ github.event.inputs.ref }}
+    - name: Install Codemagic CLI Tools
+      run: pip3 install codemagic-cli-tools==0.50.7
+    - name: Setup signing
+      env:
+        CERTIFICATE_PRIVATE_KEY: ${{ secrets.SHAREZONE_CERTIFICATE_PRIVATE_KEY }}
+        APP_STORE_CONNECT_KEY_IDENTIFIER: ${{ secrets.SHAREZONE_APP_STORE_CONNECT_KEY_IDENTIFIER }}
+        APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.SHAREZONE_APP_STORE_CONNECT_ISSUER_ID }}
+        APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.SHAREZONE_APP_STORE_CONNECT_PRIVATE_KEY }}
+        BUNDLE_ID: de.codingbrain.sharezone.app.dev
+      run: |
+        # Even when are trying to build app, we need to use "--platform IOS".
+
+        # The reason for this that our production bundle ID was created for
+
+        # IOS only. However, it's still possible to sign a macOS app with an
+
+        # iOS bundle ID (requires "--strict-match-identifier", otherwise the
+
+        # tool would try to use our de.codingbrain.sharezone.app.dev bundle ID
+
+        # which is a universal bundle ID and has no specific platform).
+
+        #
+
+        # See https://github.com/codemagic-ci-cd/cli-tools/issues/314
+
+        app-store-connect fetch-signing-files $BUNDLE_ID \
+          --platform IOS \
+          --type MAC_APP_STORE \
+          --strict-match-identifier \
+          --create
+        keychain initialize
+
+        keychain add-certificates
+
+        xcode-project use-profiles
+    - name: Set Flutter version from FVM config file to environment variables
+      id: fvm-config-action
+      uses: kuhnroyal/flutter-fvm-config-action@4155f8ca4c30a4f2f50df69caa0e4259f6cd1142
+    - uses: subosito/flutter-action@44ac965b96f18d999802d4b807e3256d5a3f9fa1
+      with:
+        flutter-version: ${{ steps.fvm-config-action.outputs.FLUTTER_VERSION }}
+        channel: ${{ steps.fvm-config-action.outputs.FLUTTER_CHANNEL }}
+    - name: Install FlutterFire CLI
+      run: flutter pub global activate flutterfire_cli 0.3.0-dev.19
+    - name: Build macOS app
+      run: |
+        flutter build macos \
+          --flavor dev \
+          -t lib/main_dev.dart
